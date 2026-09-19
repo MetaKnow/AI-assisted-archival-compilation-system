@@ -1,0 +1,292 @@
+/* ==========================================================================
+   档案辅助编研系统 · 设计令牌与基础排版
+
+   设计系统依据（ui-ux-pro-max skill）：
+     风格  Swiss Modernism 2.0（严格栅格 / 8px 基准 / 单一强调色 / 无装饰）
+         + Editorial Grid（文档阅读面用衬线，印刷气质）
+         + Accessible & Ethical / Inclusive Design（WCAG AA+，焦点可见，尊重减弱动效）
+     配色  Government / Public Service：高对比藏青 + 单一强调蓝
+     字体  skill 给出的配对均为纯拉丁字体（EB Garamond / Lato 等），无法覆盖中文，
+           故取其**原则**：衬线立权威（标题与文档正文）＋ 无衬线做界面（高密度可读）
+   ========================================================================== */
+
+:root {
+  /* ---- 色彩：政务高对比藏青 ---- */
+  --ink: #020617;            /* 正文 */
+  --ink-2: #334155;          /* 次要文本 */
+  --ink-3: #475569;          /* 弱化文本（浅底上 ≈7:1，达 WCAG AAA） */
+  --line: #e2e8f0;
+  --line-2: #f1f5f9;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #fcfdfe;
+
+  --navy: #0f172a;           /* 主色：顶栏、主标题 */
+  --navy-2: #1e293b;
+  --accent: #0369a1;         /* 唯一强调色 */
+  --accent-d: #075985;
+  --accent-l: #e0f2fe;
+  --accent-b: #bae6fd;
+
+  --ok: #15803d;    --ok-bg: #f0fdf4;    --ok-b: #bbf7d0;
+  --warn: #b45309;  --warn-bg: #fffbeb;  --warn-b: #fde68a;
+  --danger: #b91c1c; --danger-bg: #fef2f2; --danger-b: #fecaca;
+
+  /* ---- 档案纸面（Editorial Grid：只在文档阅读面使用暖色） ---- */
+  --paper: #fbf9f4;
+  --paper-line: #e7e0d2;
+  --seal: #9f1239;           /* 印泥红：仅用于「已采用」等极少数强调 */
+
+  /* ---- 间距：8px 基准 ---- */
+  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
+  --s5: 24px; --s6: 32px; --s7: 48px;
+
+  /* ---- 字号：中文可读性优先 ---- */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 15px;           /* 界面正文 */
+  --fs-read: 16px;           /* 文档阅读面，略大以保证长文可读 */
+  --fs-lg: 18px;
+  --fs-xl: 22px;
+  --fs-2xl: 28px;
+
+  --lh-tight: 1.35;
+  --lh-ui: 1.6;
+  --lh-read: 1.85;
+
+  /* ---- 形状 ---- */
+  --r-sm: 4px; --r: 6px; --r-lg: 10px; --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(2, 6, 23, .06), 0 1px 3px rgba(2, 6, 23, .04);
+  --shadow-2: 0 4px 12px rgba(2, 6, 23, .08);
+  --shadow-3: 0 16px 40px rgba(2, 6, 23, .18);
+
+  /* 焦点环：3px 可见，不改变布局 */
+  --ring: 0 0 0 3px rgba(3, 105, 161, .32);
+
+  /* 过渡：150–300ms */
+  --dur: 180ms;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+
+  /* ---- 字体族 ---- */
+  --font-ui: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-serif: "Songti SC", "STSong", "SimSun", "Source Han Serif SC",
+    "Noto Serif CJK SC", Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace;
+
+  --header-h: 56px;
+}
+
+/* ---------------------------------------------------------------- 重置 */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: var(--lh-ui);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; line-height: var(--lh-tight); letter-spacing: -.005em; }
+h1 { font-size: var(--fs-2xl); }
+h2 { font-size: var(--fs-xl); }
+h3 { font-size: var(--fs-lg); }
+h4 { font-size: var(--fs-base); }
+
+p { margin: 0 0 var(--s2); }
+p:last-child { margin-bottom: 0; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-d); text-decoration: underline; text-underline-offset: 2px; }
+
+ul, ol { margin: var(--s1) 0; padding-left: var(--s5); }
+li { margin: 2px 0; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+img, svg { max-width: 100%; }
+svg { display: block; }
+
+code, .mono { font-family: var(--font-mono); font-size: .86em; letter-spacing: -.01em; }
+
+/* ------------------------------------------------------- 无障碍基础 */
+
+/* 焦点必须可见：键盘用户依赖它 */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* 跳过导航，直达主内容 */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 200;
+  padding: 10px var(--s4);
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--fs-sm);
+  border-radius: 0 0 var(--r) 0;
+}
+.skip-link:focus {
+  left: 0;
+  color: #fff;
+  text-decoration: none;
+}
+
+/* 仅供屏幕阅读器 */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* 尊重系统「减弱动效」设置 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 图标：统一 24 视图框、随文字颜色 */
+.icon {
+  width: 1em;
+  height: 1em;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: -.125em;
+}
+.icon-lg { width: 1.35em; height: 1.35em; }
+.icon-xl { width: 2em; height: 2em; stroke-width: 1.6; }
+
+/* ---------------------------------------------------------- 通用工具 */
+
+.muted { color: var(--ink-3); }
+.dim { color: var(--ink-2); }
+.serif { font-family: var(--font-serif); }
+.nowrap { white-space: nowrap; }
+.center { text-align: center; }
+.hidden { display: none !important; }
+/* 数字对齐，统计数值不跳动 */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------- 页面骨架 */
+
+.app { min-height: 100vh; display: flex; flex-direction: column; }
+
+.app-header {
+  height: var(--header-h);
+  background: var(--navy);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 0 var(--s4);
+  position: sticky;
+  top: 0;
+  z-index: 60;
+}
+.app-header .brand {
+  display: flex; align-items: center; gap: var(--s2);
+  font-size: var(--fs-base); font-weight: 600; letter-spacing: .01em;
+}
+.app-header .brand small {
+  font-weight: 400; font-size: var(--fs-xs);
+  color: rgba(255, 255, 255, .62); margin-left: var(--s1);
+}
+.app-header .spacer { flex: 1; }
+.app-header .head-extra { display: flex; align-items: center; gap: var(--s2); }
+
+.container {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--s5) var(--s5) var(--s6);
+  flex: 1;
+}
+
+.footer-note {
+  text-align: center;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  padding: var(--s4) var(--s4) var(--s5);
+  border-top: 1px solid var(--line);
+  margin-top: var(--s5);
+}
+.footer-note .sep { margin: 0 var(--s2); opacity: .45; }
+
+/* ------------------------------------------------- 12 栏栅格（Swiss） */
+
+.grid-12 {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--s5);
+  align-items: start;
+}
+.span-3 { grid-column: span 3; }
+.span-4 { grid-column: span 4; }
+.span-5 { grid-column: span 5; }
+.span-6 { grid-column: span 6; }
+.span-7 { grid-column: span 7; }
+.span-8 { grid-column: span 8; }
+.span-9 { grid-column: span 9; }
+.span-12 { grid-column: span 12; }
+
+.grid { display: grid; gap: var(--s4); }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.stack { display: flex; flex-direction: column; gap: var(--s3); }
+.hstack { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.hstack.tight { gap: var(--s1); }
+
+/* 竖向节奏：相邻卡片 */
+.card + .card { margin-top: var(--s4); }
+
+/* ---------------------------------------------------------- 响应式 */
+
+/* ≤1280：侧栏收窄，去掉最宽留白 */
+@media (max-width: 1280px) {
+  .container { padding: var(--s4); }
+  .grid-12 { gap: var(--s4); }
+}
+
+/* ≤1024：双栏改为单栏堆叠 */
+@media (max-width: 1024px) {
+  .grid-12 > [class^="span-"] { grid-column: 1 / -1; }
+  .grid-3, .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ≤768：平板竖屏 */
+@media (max-width: 768px) {
+  :root { --s5: 20px; }
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .container { padding: var(--s4) var(--s3) var(--s6); }
+  .app-header { padding: 0 var(--s3); gap: var(--s2); }
+  .app-header .brand small { display: none; }
+}
+
+/* ≤480：手机 */
+@media (max-width: 480px) {
+  :root { --fs-2xl: 22px; --fs-xl: 18px; }
+  .app-header { height: auto; padding: var(--s2) var(--s3); flex-wrap: wrap; }
+  .app-header .head-extra { width: 100%; order: 3; }
+}
