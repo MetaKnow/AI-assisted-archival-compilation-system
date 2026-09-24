@@ -59,19 +59,22 @@
       intro: '系统的中枢：一个任务对应一项编研工作，任务内按六阶段推进。',
       points: [
         '新建任务：关联选题立项中状态为「未开始」的选题；设置编研团队成员（团队负责人、档案收集人员、编辑审核人员、成果发布人员、宣传推介人员、材料归档人员）；填写备注',
-        '任务卡片：显示选题名称、任务日期、任务状态（未开始 / 进行中 / 已完成）、任务进度（生成大纲 → 确定选材 → 加工编排 → 辅文编写 → 审核校定 → 成果发布）',
+        '任务卡片：显示选题名称、任务日期、任务状态（未开始 / 进行中 / 已完成）、任务进度（' +
+          App.mock.TASK_STAGES.map(function (s) { return s.title; }).join(' → ') + '）',
         '卡片右上角「⋮」菜单：修改、删除、启动、暂停',
         '点击卡片进入编研任务管理界面 —— 该界面沿用《原型功能模块规划》的七步原型，作为本模块的设计参考'
       ]
     },
     review: {
-      title: '审核校定',
-      intro: '编研成果审核校定流程的待办与审批入口。',
+      title: '流程审核',
+      intro: '跨模块的审批流台账：谁发起了什么、现在轮到谁审、审过没有。',
       points: [
-        '流程列表：流程编号、编研选题、发起日期、发起人、状态（审核中 / 审核不通过 / 审核通过）',
+        '两类流程分开看：选题立项审核流程（《编研选题立项审核》）/ 编研成果审核流程（成果发布审核）',
+        '列表字段：流程编号、名称、发起日期、发起人、当前环节（第几步 / 共几步）、当前审核人、状态、操作',
         '数据权限：admin 用户显示所有流程；其他用户显示需要自己审核或自己发起的流程',
-        '审批流程：需要当前用户审核的流程，允许点击审核按钮完成审核',
-        '内容审核校对：错别字校对、政治性审核、专业性审核、合规性审核（AI 能力，原型可暂不实现）'
+        '操作分「查看 / 审核」两个：查看看流程详情与各环节意见；需要当前用户审核的流程，点「审核」进入审核界面',
+        '发起与审核都会在本页生成数据：选题立项的「发起审核」、任务第 5 阶段的「发起审核」都登记到这里',
+        '与任务第 4 阶段「审核校定」的分工：本模块管审批流，第 4 阶段管成果正文的政治性 / 专业性 / 合规性校对'
       ]
     },
     product: {
@@ -269,6 +272,7 @@
       '<nav class="nav" aria-label="主导航">' + items + '</nav>' +
       '<div class="sidebar-foot">' +
         esc(App.mock.ORG.version) + ' · ' + esc(App.mock.ORG.env) + '<br>' +
+        '种子 ' + (App.mock && App.mock.SEED_VERSION ? App.mock.SEED_VERSION : '-') + '　·　' +
         '生产架构见《技术选型方案》' +
       '</div>' +
     '</aside>' +
@@ -321,7 +325,10 @@
       (actionsHtml || '') +
       '<button type="button" class="icon-btn" data-action="app:notify" ' +
         'aria-label="消息通知" title="消息通知">' + icon('bell') +
-        '<span class="dot"></span></button>' +
+        '<span class="dot"></span>' +
+        (S.unreadMessageCount && S.unreadMessageCount()
+          ? '<span class="badge">' + S.unreadMessageCount() + '</span>' : '') +
+        '</button>' +
       '<button type="button" class="user-trigger" data-action="ui:menu" ' +
         'data-menu-trigger="user-menu" aria-haspopup="true" aria-expanded="false">' +
         '<span class="avatar">' + esc(App.util.nameInitials(user.name)) + '</span>' +
@@ -535,7 +542,9 @@
     U.register('ui:menu', function (ds, el) { U.toggleMenu(el); });
 
     U.register('app:notify', function () {
-      U.toast('消息中心尚未实现，本期只呈现入口', 'info');
+      U.closeMenus();
+      if (App.messages) App.messages.openPanel();
+      else U.toast('消息中心尚未实现', 'info');
     });
 
     /* 用户 */
@@ -586,7 +595,11 @@
         if (!ok) return;
         ['archive-proto-system:topics', 'archive-proto-system:tags', 'archive-proto-system:materials',
          'archive-proto-system:tasks', 'archive-proto-system:products', 'archive-proto-system:archive',
-         'archive-proto-system:outline', 'archive-proto-system:seed'].forEach(function (k) {
+         'archive-proto-system:outline', 'archive-proto-system:selections',
+         'archive-proto-system:compose', 'archive-proto-system:auditRules', 'archive-proto-system:auditResults',
+         'archive-proto-system:taskProgress',
+         'archive-proto-system:messages', 'archive-proto-system:publish',
+         'archive-proto-system:seed'].forEach(function (k) {
           try { localStorage.removeItem(k); } catch (e) {}
         });
         location.reload();
@@ -615,6 +628,13 @@
 
   function boot() {
     S.init();
+    if (S.reseeded && S.reseeded()) {
+      /* 种子更新会重置演示数据；任务进展（阶段/状态）是用户的操作结果，单独保留 */
+      setTimeout(function () {
+        U.toast('演示数据已更新到「种子 ' + (App.mock.SEED_VERSION || '-') +
+          '」；任务进展（阶段 / 状态）已保留', 'ok');
+      }, 400);
+    }
     /* 页面动作注册：遍历 App.pages 自动注册，新增模块不必再改这里 */
     Object.keys(App.pages).forEach(function (name) {
       var page = App.pages[name];
@@ -626,6 +646,14 @@
     U.initDelegation(document.getElementById('app'));
     U.initDelegation(document.getElementById('overlay-root'));
     U.bindMenus();
+    /* 全屏工作台（加工编排）的 Esc 退出 */
+    if (App.taskCompose && App.taskCompose.bindKeys) App.taskCompose.bindKeys();
+    /* 全屏校定界面（校定内容）的 Esc 退出 */
+    if (App.reviewCalibrate && App.reviewCalibrate.bindKeys) App.reviewCalibrate.bindKeys();
+    /* 全屏审核界面（成果发布审核）的 Esc 退出 */
+    if (App.messages && App.messages.bindKeys) App.messages.bindKeys();
+    /* 全屏立项审核界面（选题立项审核）的 Esc 退出 */
+    if (App.topicReview && App.topicReview.bindKeys) App.topicReview.bindKeys();
 
     // 视口变宽后自动收起移动端抽屉，避免留下遮罩
     global.addEventListener('resize', function () {

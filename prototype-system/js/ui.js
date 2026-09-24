@@ -192,7 +192,22 @@
 
   var actions = {};
 
-  function register(name, fn) { actions[name] = fn; }
+  /**
+   * 注册页面动作。
+   * ⚠ 动作名是**全局命名空间**：两个页面用同一个名字时，后注册的会**静默覆盖**前一个，
+   * 表现为"按钮点了没反应、一行报错都没有"（本仓库为此踩过两次：`ar:` 与 `rv:`）。
+   * 所以这里检测重名并告警 —— 套件里的"0 条 console 警告"断言会当场抓住它。
+   */
+  function register(name, fn) {
+    if (actions[name]) {
+      warn('动作名重复注册：「' + name + '」被后注册的覆盖 —— 新页面换个前缀，别和别的页面撞名');
+    }
+    actions[name] = fn;
+  }
+
+  function warn(msg) {
+    if (global.console && console.warn) console.warn('[ui] ' + msg);
+  }
 
   function initDelegation(root) {
     if (!root || root.__delegationBound) return;

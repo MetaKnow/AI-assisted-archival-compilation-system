@@ -57,13 +57,6 @@
     });
   }
 
-  function fmtSize(bytes) {
-    var n = Number(bytes) || 0;
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    return (n / 1024 / 1024).toFixed(1) + ' MB';
-  }
-
   function isReviewing(t) { return !!(t.review && t.review.status === 'REVIEWING'); }
 
   /* ------------------------------------------------------------ 列表页 */
@@ -302,7 +295,7 @@
     return '<div class="attach-list">' + state.formFiles.map(function (f, i) {
       return '<div class="attach-item">' + icon('file-text') +
         '<span class="attach-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
-        '<span class="attach-size">' + esc(fmtSize(f.size)) + '</span>' +
+        '<span class="attach-size">' + esc(App.util.fmtSize(f.size)) + '</span>' +
         '<button type="button" class="btn btn-sm btn-text" data-action="topic:remove-file" ' +
           'data-i="' + i + '" title="移除该附件" aria-label="移除 ' + esc(f.name) + '">' +
           icon('x') + '</button>' +
@@ -463,7 +456,7 @@
     return '<div class="attach-list">' + t.attachments.map(function (a) {
       return '<div class="attach-item">' + icon('file-text') +
         '<span class="attach-name" title="' + esc(a.name) + '">' + esc(a.name) + '</span>' +
-        '<span class="attach-size">' + esc(fmtSize(a.size)) + '</span>' +
+        '<span class="attach-size">' + esc(App.util.fmtSize(a.size)) + '</span>' +
       '</div>';
     }).join('') + '</div>';
   }
@@ -482,12 +475,11 @@
   }
 
   /**
-   * 查看编研选题：与填写态同一张《选题可行性评估表》，但**完全只读** ——
-   * 不渲染任何 input/textarea，避免"看起来能改其实改不了"的误导。
+   * 只读《选题可行性评估表》。
+   * 查看弹窗、「立项审核」全屏界面（右栏）与导出文件都用这一份，避免三处走样。
    */
-  function openView(t) {
-    var body = viewMeta(t) +
-      '<div class="form-table form-table-read">' +
+  function readonlyFormHtml(t) {
+    return '<div class="form-table form-table-read">' +
         readRow('选题名称', t.name, 'title') +
         readRow('编研团队', t.team, 'long') +
         readRow('经费情况', fundingText(t)) +
@@ -497,6 +489,19 @@
         readRow('保障措施', t.guarantee, 'long') +
         readRow('评估意见', t.comment, 'long') +
         readRowHtml('附件', attachReadHtml(t)) +
+      '</div>';
+  }
+
+  /**
+   * 查看编研选题：与填写态同一张《选题可行性评估表》，但**完全只读** ——
+   * 不渲染任何 input/textarea，避免"看起来能改其实改不了"的误导。
+   */
+  function openView(t) {
+    var body = viewMeta(t) + readonlyFormHtml(t) +
+      '<div class="hstack" style="margin-top:var(--s3)">' +
+        '<button type="button" class="btn" data-action="topic:export" data-id="' + esc(t.id) + '">' +
+          icon('download') + '导出选题可行性评估表</button>' +
+        '<span class="muted" style="font-size:var(--fs-xs)">原型导出为 HTML 文件（生产环境导出 Word / PDF）</span>' +
       '</div>' +
       '<div class="data-note" style="margin-top:var(--s3)">' + icon('info') +
         '<span>本页为<b>只读查看</b>：如需修改，请关闭后点击列表中的「修改」按钮。</span>' +
@@ -509,6 +514,76 @@
       okText: '关闭',
       cancelText: null
     });
+  }
+
+  /* ------------------------------------------------- 导出评估表 */
+
+  function exportHtml(t) {
+    var now = App.util.fmtDateTime(new Date().toISOString());
+    function field(label, inner) {
+      return '<tr><th>' + esc(label) + '</th><td>' + inner + '</td></tr>';
+    }
+    function text(v) {
+      var x = String(v === undefined || v === null ? '' : v).trim();
+      return x ? esc(x).replace(/\n/g, '<br>') : '<span class="empty">未填写</span>';
+    }
+    var attach = (!t.attachments || !t.attachments.length)
+      ? '<span class="empty">无附件</span>'
+      : t.attachments.map(function (a) {
+          return esc(a.name) + '（' + esc(App.util.fmtSize(a.size)) + '）';
+        }).join('；');
+
+    return '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">' +
+      '<title>选题可行性评估表 · ' + esc(t.name) + '</title>' +
+      '<style>' +
+      'body{font-family:"Songti SC","SimSun",serif;margin:32px;color:#1f2937;font-size:14px}' +
+      'h1{font-size:22px;text-align:center;margin:0 0 6px}' +
+      '.sub{text-align:center;color:#6b7280;font-size:12px;margin-bottom:18px}' +
+      'table{width:100%;border-collapse:collapse;table-layout:fixed}' +
+      'th,td{border:1px solid #9ca3af;padding:8px 10px;vertical-align:top;word-break:break-word}' +
+      'th{width:110px;background:#f3f4f6;text-align:left;font-weight:600}' +
+      '.empty{color:#9ca3af}' +
+      '.foot{margin-top:14px;color:#6b7280;font-size:12px}' +
+      '</style></head><body>' +
+      '<h1>选题可行性评估表</h1>' +
+      '<div class="sub">选题编号 ' + esc(t.id) + '　·　导出时间 ' + esc(now) + '</div>' +
+      '<table>' +
+        field('选题名称', text(t.name)) +
+        field('状态', esc(statusDef(t.status).label)) +
+        field('创建人', esc(t.createdBy) + '　' + esc(App.util.fmtDateTime(t.createdAt))) +
+        field('编研团队', text(t.team)) +
+        field('经费情况', esc(fundingText(t))) +
+        field('背景与意义', text(t.background)) +
+        field('内容与目标', text(t.content)) +
+        field('实施方案', text(t.plan)) +
+        field('保障措施', text(t.guarantee)) +
+        field('评估意见', text(t.comment)) +
+        field('附件', attach) +
+      '</table>' +
+      '<div class="foot">本表由档案辅助编研系统自动导出（原型导出为 HTML，生产环境可导出 Word / PDF）。</div>' +
+      '</body></html>';
+  }
+
+  /** 导出《选题可行性评估表》：本地生成文件并触发浏览器下载（原型无服务端） */
+  function exportForm(t) {
+    if (!t) { U.toast('没有可导出的选题', 'warn'); return; }
+    try {
+      var blob = new Blob([exportHtml(t)], { type: 'text/html;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = '选题可行性评估表-' + String(t.name || t.id).replace(/[\\/:*?"<>|\s]+/g, '_') + '-' +
+        String(new Date().toISOString()).slice(0, 10) + '.html';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        if (a.parentNode) a.parentNode.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 0);
+      U.toast('已导出《选题可行性评估表》：' + a.download, 'ok');
+    } catch (e) {
+      U.toast('导出失败：' + (e && e.message ? e.message : e), 'err');
+    }
   }
 
   /* --------------------------------------------------- AI 辅助选题 */
@@ -547,47 +622,18 @@
 
   /* ------------------------------------------------------- 发起审核 */
 
+  /**
+   * 发起立项审核：打开**浏览器内全屏**的《编研选题立项审核》界面 ——
+   * 左：本次发起的选题 + 审核步骤与审核意见；右：《选题可行性评估表》。
+   * 在界面上确认后才真正登记流程（不再只用一行 confirm 文案带过）。
+   */
   function doReview(ids) {
     if (!ids.length) return;
-    var names = ids.map(function (id) {
-      var t = S.getTopic(id);
-      return t ? t.name : id;
-    });
-
-    var question = ids.length === 1
-      ? '将对选题「' + esc(names[0]) + '」发起《编研选题立项审核》，流程将进入审核校定环节。'
-      : '将对选中的 <b>' + ids.length + '</b> 个选题批量发起《编研选题立项审核》。';
-
-    U.confirm({
-      title: ids.length === 1 ? '发起立项审核？' : '批量发起立项审核？',
-      content: question + '<div class="muted" style="margin-top:6px;font-size:var(--fs-xs)">' +
-        '原型只登记流程记录，审批环节留给「审核校定」模块。</div>',
-      okText: '发起审核'
-    }).then(function (ok) {
-      if (!ok) return;
-
-      var done = [], failed = [];
-      ids.forEach(function (id) {
-        var t = S.getTopic(id);
-        var r = S.submitTopicReview(id);
-        (r.ok ? done : failed).push((t ? t.name : id) + (r.ok ? '' : '——' + r.message));
-      });
-
-      if (done.length && !failed.length) {
-        U.toast('已发起立项审核 ' + done.length + ' 项', 'ok');
-      } else if (done.length && failed.length) {
-        U.modal({
-          title: '部分选题未能发起审核', width: 620, cancelText: null, okText: '知道了',
-          body: '<p>已成功发起 ' + done.length + ' 项，以下 ' + failed.length + ' 项被跳过：</p>' +
-            '<ul>' + failed.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>'
-        });
-      } else {
-        U.modal({
-          title: '无法发起立项审核', width: 620, cancelText: null, okText: '知道了',
-          body: '<ul>' + failed.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>'
-        });
-      }
-    });
+    if (App.topicReview) {
+      App.topicReview.openSubmit(ids);
+      return;
+    }
+    U.toast('「立项审核」界面未加载，无法发起审核', 'err');
   }
 
   /* ----------------------------------------------------------- 删除 */
@@ -642,6 +688,9 @@
   /* ------------------------------------------------------------ 交互 */
 
   function register() {
+    /* 全屏「立项审核」界面的动作（实现在 topic-review.js）：boot 时随本页一起注册 */
+    if (App.topicReview && App.topicReview.register) App.topicReview.register();
+
     /* 列表 */
     U.register('topic:new', function () { openForm(null); });
     U.register('topic:edit', function (ds) {
@@ -652,6 +701,10 @@
     U.register('topic:view', function (ds) {
       var t = S.getTopic(ds.id);
       if (t) openView(t);
+    });
+    U.register('topic:export', function (ds) {
+      var t = S.getTopic(ds.id);
+      if (t) exportForm(t);
     });
     U.register('topic:delete', function (ds) { doDelete([ds.id]); });
     U.register('topic:batch-delete', function () { doDelete(selectedIds()); });
@@ -739,6 +792,14 @@
     var sel = rows.filter(function (t) { return state.selected[t.id]; }).length;
     all.indeterminate = sel > 0 && sel < rows.length;
   }
+
+  App.topic = {
+    readonlyFormHtml: readonlyFormHtml,
+    viewMeta: viewMeta,
+    exportForm: exportForm,
+    fundingText: fundingText,
+    statusDef: statusDef
+  };
 
   App.pages = App.pages || {};
   App.pages.topic = {

@@ -224,6 +224,10 @@
         '<td class="col-year">' + esc(a.security) + '</td>' +
         /* 「已在素材库」单独放最右一列，不再挤在题名后面 */
         '<td class="col-lib">' + (inLib ? U.tag('已在素材库', 'tag-ok') : '') + '</td>' +
+        /* 每条都能看这条数据的目录与文件（只读） */
+        '<td class="col-actions"><button type="button" class="btn btn-sm btn-text" ' +
+          'data-action="material:view" data-from="catalog" data-id="' + esc(a.id) + '" ' +
+          'title="查看该档案的目录与文件">' + icon('eye') + '查看</button></td>' +
       '</tr>';
     }).join('');
 
@@ -246,6 +250,7 @@
         '<th class="col-year">保管期限</th>' +
         '<th class="col-year">密级</th>' +
         '<th class="col-lib">素材库</th>' +
+        '<th class="col-actions">操作</th>' +
       '</tr></thead>' +
       '<tbody>' + body + '</tbody>' +
     '</table></div>';
@@ -318,7 +323,7 @@
     if (!archives.length) return;
 
     var dup = archives.filter(function (a) { return S.hasMaterial(a.archiveNo); }).length;
-    var tags = S.tags();
+    var tags = S.tagsWithUsage();
 
     if (!tags.length) {
       U.modal({
@@ -344,7 +349,7 @@
               '<span class="pick-name">' + esc(t.name) + '</span>' +
               (t.note ? '<span class="pick-note">' + esc(t.note) + '</span>' : '') +
             '</span>' +
-            '<span class="pick-count">已用 ' + (Number(t.materialCount) || 0) + ' 件</span>' +
+            '<span class="pick-count">已用 ' + t.materialCount + ' 件</span>' +
           '</label>';
         }).join('') +
       '</div>' +

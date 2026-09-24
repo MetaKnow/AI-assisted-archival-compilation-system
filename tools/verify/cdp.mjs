@@ -176,6 +176,30 @@ export async function openChrome(opts) {
       });
     },
 
+    /** 按一次 Esc（给"Esc 关闭浮层/全屏工作台"这类断言用） */
+    async pressEscape() {
+      await send('Input.dispatchKeyEvent', {
+        type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+      });
+      await send('Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+      });
+    },
+
+    /**
+     * 指定下载目录并允许下载（验证「导出选题可行性评估表」这类本地导出）。
+     * 必须在**真实鼠标点击**（Input.dispatchMouseEvent）之前调用，否则 Chrome 会拦下无人触发的下载。
+     */
+    async setDownloadDir(dir) {
+      try {
+        await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dir,
+          eventsEnabled: true });
+      } catch (e) {
+        await send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: dir });
+      }
+      return dir;
+    },
+
     async shot(file, o) {
       o = o || {};
       var r = await send('Page.captureScreenshot', {
@@ -205,6 +229,22 @@ export async function openChrome(opts) {
   };
 
   return page;
+}
+
+/**
+ * 轮询等待页面满足某个条件（表达式字符串，返回真值即算满足）
+ * 用它替代"点一下 → 睡 400ms → 读 DOM"：机器忙的时候 400ms 可能不够，
+ * 于是偶发假失败（曾经在连跑六个套件时出现过一次 55/56 的 flake，单独跑 7 次都过）。
+ * @returns {boolean} 超时返回 false（断言里再判失败，便于定位）
+ */
+export async function waitFor(page, expr, timeoutMs, stepMs) {
+  var deadline = Date.now() + (timeoutMs || 4000);
+  for (;;) {
+    var ok = await page.evaluate('return (' + expr + ');');
+    if (ok) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(stepMs || 100);
+  }
 }
 
 /* ---------------------------------------------------------------- 断言

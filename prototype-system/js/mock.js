@@ -23,8 +23,8 @@
 
   /* ======================================================================
      人员与账号
-     角色用于演示权限差异：审核校定模块中 admin 可见全部流程，
-     其他用户只看「需我审核」与「我发起的」。
+     角色用于演示权限差异：流程审核模块中 admin 可见全部流程，
+     其他用户只看「需我审核」与「我发起的」以及自己审过的。
      ====================================================================== */
 
   /* ======================================================================
@@ -107,6 +107,11 @@
     { id: 'M-009', archiveId: null, archiveNo: 'JY-1993-Y-288', title: '普及九年义务教育验收材料', fonds: '教育全宗', year: '1993', tagIds: ['G-002'], addedAt: '2026-06-05T10:15:00', addedBy: '王建国' },
     { id: 'M-010', archiveId: null, archiveNo: 'JY-2001-Y-352', title: '教育强市建设实施方案', fonds: '教育全宗', year: '2001', tagIds: ['G-002'], addedAt: '2026-06-05T10:20:00', addedBy: '赵志远' },
     { id: 'M-011', archiveId: null, archiveNo: 'JY-1971-Y-118', title: '中学招生与分配名册', fonds: '教育全宗', year: '1971', tagIds: ['G-002'], addedAt: '2026-06-05T10:24:00', addedBy: '刘洋' },
+    /* 声像：一条录像素材（file.duration 用于"插入帧"的时长校验） */
+    { id: 'M-037', archiveId: null, archiveNo: 'SX-2016-Y-014', title: '全市教育工作会议实况录像', fonds: '声像全宗', year: '2016', tagIds: ['G-002'],
+      category: '声像档案', file: { name: '全市教育工作会议实况录像.mp4', size: 428000000, duration: 3720 },
+      addedAt: '2026-06-20T15:30:00', addedBy: '陈静' },
+
     /* 抗战史料 */
     { id: 'M-012', archiveId: null, archiveNo: 'MZ-1939-Y-021', title: '战时难民救济款项发放清册', fonds: '民政全宗', year: '1939', tagIds: ['G-003'], addedAt: '2026-06-09T14:30:00', addedBy: '王建国' },
     { id: 'M-013', archiveId: null, archiveNo: 'MZ-1940-Y-033', title: '防空疏散与临时安置文书', fonds: '民政全宗', year: '1940', tagIds: ['G-003'], addedAt: '2026-06-09T14:34:00', addedBy: '陈静' },
@@ -164,7 +169,11 @@
       summary: '两所市属高校合并的论证报告与专家意见',
       fullText: '两校专业设置重叠度较高，合并后可形成工、管、文相结合的专业群。专家组认为合有利于提高办学效益，建议先行试点，再报省教育部门审批。' },
 
-    { id: 'A-006', archiveNo: 'SL-1954-Y-007', title: '城区防洪堤加固工程设计与批复', fonds: '水利全宗', category: '科技档案', year: '1954', author: '市水利局', retention: '永久', security: '公开', pages: 28, digitized: true,
+    { id: 'A-006', archiveNo: 'SX-2016-Y-014', title: '全市教育工作会议实况录像', fonds: '声像全宗', category: '声像档案', year: '2016', author: '市教育局', retention: '永久', security: '公开', pages: 0, digitized: true,
+      summary: '全市教育工作会议全程实况录像，含领导讲话与经验交流',
+      fullText: '' },
+
+    { id: 'A-007', archiveNo: 'SL-1954-Y-007', title: '城区防洪堤加固工程设计与批复', fonds: '水利全宗', category: '科技档案', year: '1954', author: '市水利局', retention: '永久', security: '公开', pages: 28, digitized: true,
       summary: '防洪堤加固设计方案、批复与预算',
       fullText: '去岁汛期洪水位超过保证水位，堤身出现渗漏。市水利局拟将城区段堤防加高一点二米，迎水面加做浆砌石护坡，工程预算共计人民币十八万元。' },
     { id: 'A-007', archiveNo: 'SL-1963-Y-045', title: '水库灌区配套工程年度总结', fonds: '水利全宗', category: '文书档案', year: '1963', author: '市水利局', retention: '长期', security: '公开', pages: 14, digitized: true,
@@ -217,7 +226,7 @@
   ];
 
   /* 档案门类的规范顺序（下拉按此排序，而不是按数据出现顺序） */
-  var ARCHIVE_CATEGORIES = ['文书档案', '科技档案', '会计档案', '照片档案', '实物档案', '专业档案'];
+  var ARCHIVE_CATEGORIES = ['文书档案', '科技档案', '会计档案', '照片档案', '声像档案', '实物档案', '专业档案'];
 
   /* 检索界面上的示例检索词，点一下即可发起检索 */
   var SEARCH_SUGGESTIONS = ['教育', '水利', '商会', '抗战', '救济', '规划'];
@@ -295,14 +304,15 @@
   };
 
   /* ======================================================================
-     审核校定数据
+     流程审核数据
      —— 两类流程共用一个数组：选题的《编研选题立项审核》(TOPIC_REVIEW)
-        与编研任务的《编研成果审核校定》(PRODUCT_REVIEW)。
-        权限口径（设计文档）：admin 可见全部；其他用户只看"需自己审核"或"自己发起"的。
+        与编研任务的《编研成果审核》(PRODUCT_REVIEW)。
+        多环节流程把步骤级的审核人、审核意见与状态直接记在记录里（见 store 的流程引擎）；
+        权限口径（设计文档）：admin 可见全部；其他用户只看"需自己审核""自己发起"或"自己审过"的。
      ====================================================================== */
 
   var REVIEW_FLOW_TYPES = {
-    PRODUCT_REVIEW: { label: '编研成果审核校定', short: '成果审核', prefix: 'SH' },
+    PRODUCT_REVIEW: { label: '编研成果审核', short: '成果审核', prefix: 'FB' },
     TOPIC_REVIEW: { label: '编研选题立项审核', short: '立项审核', prefix: 'LX' }
   };
 
@@ -335,12 +345,12 @@
   ];
 
   var REVIEW_FLOWS = [
-    { flowNo: 'SH-2026-0002', type: 'PRODUCT_REVIEW', targetId: 'RW-2026-003',
+    { flowNo: 'FB-2026-0002', type: 'PRODUCT_REVIEW', targetId: 'RW-2026-003',
       targetName: '本市行政区划沿革（1949—2025）',
       at: '2026-09-08T09:20:00', by: '陈静', reviewer: '李文华', status: 'REVIEWING',
       opinion: '', reviewedAt: null, reviewedBy: null,
       history: [{ at: '2026-09-08T09:20:00', by: '陈静', action: 'SUBMIT', opinion: '初稿及辅文已完成，提交审核。' }] },
-    { flowNo: 'SH-2026-0001', type: 'PRODUCT_REVIEW', targetId: 'RW-2025-004',
+    { flowNo: 'FB-2026-0001', type: 'PRODUCT_REVIEW', targetId: 'RW-2025-004',
       targetName: '抗战时期本地民众救助档案选编',
       at: '2026-03-10T14:00:00', by: '刘洋', reviewer: '李文华', status: 'APPROVED',
       opinion: '三审三校完成，原文与编者文字分离清楚，同意发布。',
@@ -414,16 +424,16 @@
     { key: 'MATERIAL', index: 2, title: '确定选材',
       goal: '从素材库中选定入编档案', outputs: '选材清单、大纲覆盖率',
       gate: '选材清单非空，且主要章节均有史料支撑' },
+    /* 评审要求：去掉原第 4 阶段「辅文编写」—— 序言 / 按语 / 注释 / 索引等辅文并入「加工编排」，
+       所以 EDIT 的产出里带上辅文；后面的阶段各上移一位（审核校定 4、成果发布 5）。 */
     { key: 'EDIT', index: 3, title: '加工编排',
-      goal: '转录、编排、影印与格式加工', outputs: '编排稿（档案原文与编者文字分离）',
-      gate: '原文保护校验通过（改动均附校勘记）' },
-    { key: 'APPARATUS', index: 4, title: '辅文编写',
-      goal: '编写序言、按语、注释、索引等辅文', outputs: '辅文（注释 / 索引 / 附录）',
-      gate: '辅文齐备，索引页码与正文一致' },
-    { key: 'REVIEW', index: 5, title: '审核校定',
+      goal: '转录、编排、影印与格式加工，并编写序言 / 按语 / 注释 / 索引等辅文',
+      outputs: '编排稿（档案原文与编者文字分离）＋辅文（注释 / 索引 / 附录）',
+      gate: '原文保护校验通过（改动均附校勘记），辅文齐备' },
+    { key: 'REVIEW', index: 4, title: '审核校定',
       goal: '完成三审三校', outputs: '审校记录、定稿',
       gate: '三审三校全部通过' },
-    { key: 'PUBLISH', index: 6, title: '成果发布',
+    { key: 'PUBLISH', index: 5, title: '成果发布',
       goal: '生成终稿并发布成果', outputs: 'PDF / OFD / HTML 成果、发布记录',
       gate: '终稿确认，密级与输出格式相符' }
   ];
@@ -443,15 +453,17 @@
   var TASKS = [
     {
       id: 'RW-2026-001', type: '档案文献汇编', topicId: 'T-001', topicName: '本市教育事业发展史料汇编',
-      status: 'IN_PROGRESS', paused: false, stage: 1,
+      status: 'IN_PROGRESS', paused: false, stage: 2,
       planStart: '2026-03-16', planEnd: '2026-12-20',
       team: { leader: '王建国', collector: '陈静', editor: '李文华', publisher: '刘洋', promoter: '刘洋', archivist: '陈静' },
       note: '按「学制变迁—学校沿革—教育人物」三条线索编排，重点保证民国段完整性。',
       createdAt: '2026-03-16T09:30:00', createdBy: '赵志远',
-      /* 评审要求：把这条任务的进度重置到第 1 阶段「生成大纲」——
-         它是本原型里唯一停在「生成大纲」的在建任务，详情页因此显示该阶段的工作界面 */
+      /* 评审要求：这条任务的进度先重置到第 1 阶段「生成大纲」，现在推进到第 2 阶段「确定选材」——
+         它是本原型里唯一停在「确定选材」的在建任务，详情页因此显示该阶段的工作界面
+         （进度条上的阶段可以点着看，第 1 阶段的界面还在） */
       stageHistory: [
-        { stage: 1, at: '2026-03-20T10:00:00', by: '王建国' }
+        { stage: 1, at: '2026-03-20T10:00:00', by: '王建国' },
+        { stage: 2, at: '2026-05-08T14:20:00', by: '王建国' }
       ]
     },
     {
@@ -477,13 +489,13 @@
         { stage: 1, at: '2026-02-18T09:20:00', by: '陈静' },
         { stage: 2, at: '2026-03-24T10:30:00', by: '陈静' },
         { stage: 3, at: '2026-05-19T16:10:00', by: '李文华' },
-        { stage: 4, at: '2026-07-02T09:45:00', by: '李文华' },
-        { stage: 5, at: '2026-08-28T10:20:00', by: '陈静' }
+        { stage: 4, at: '2026-08-28T10:20:00', by: '陈静' },
+        { stage: 5, at: '2026-09-08T09:20:00', by: '陈静' }
       ]
     },
     {
       id: 'RW-2025-004', type: '档案文献选编', topicId: 'T-002', topicName: '抗战时期本地民众救助档案选编',
-      status: 'DONE', paused: false, stage: 6,
+      status: 'DONE', paused: false, stage: 5,
       planStart: '2025-11-10', planEnd: '2026-03-31',
       team: { leader: '李文华', collector: '陈静', editor: '李文华', publisher: '刘洋', promoter: '刘洋', archivist: '陈静' },
       note: '已出版，成果同时归档。',
@@ -493,14 +505,13 @@
         { stage: 1, at: '2025-11-14T10:00:00', by: '李文华' },
         { stage: 2, at: '2025-12-08T15:30:00', by: '陈静' },
         { stage: 3, at: '2026-01-16T11:20:00', by: '李文华' },
-        { stage: 4, at: '2026-02-19T10:40:00', by: '李文华' },
-        { stage: 5, at: '2026-03-12T14:00:00', by: '刘洋' },
-        { stage: 6, at: '2026-03-28T17:20:00', by: '刘洋' }
+        { stage: 4, at: '2026-03-12T14:00:00', by: '刘洋' },
+        { stage: 5, at: '2026-03-28T17:20:00', by: '刘洋' }
       ]
     },
     {
       id: 'RW-2025-005', type: '展览展示', topicId: 'T-008', topicName: '城市记忆：老照片展览展示方案',
-      status: 'DONE', paused: false, stage: 6,
+      status: 'DONE', paused: false, stage: 5,
       planStart: '2025-09-26', planEnd: '2025-12-20',
       team: { leader: '陈静', collector: '陈静', editor: '刘洋', publisher: '刘洋', promoter: '刘洋', archivist: '刘洋' },
       note: '线上线下同步展陈，照片说明经党史部门审核。',
@@ -510,14 +521,13 @@
         { stage: 1, at: '2025-10-08T09:30:00', by: '陈静' },
         { stage: 2, at: '2025-10-24T14:10:00', by: '陈静' },
         { stage: 3, at: '2025-11-12T10:20:00', by: '刘洋' },
-        { stage: 4, at: '2025-11-28T15:00:00', by: '刘洋' },
-        { stage: 5, at: '2025-12-10T11:30:00', by: '刘洋' },
-        { stage: 6, at: '2025-12-18T16:00:00', by: '刘洋' }
+        { stage: 4, at: '2025-12-10T11:30:00', by: '刘洋' },
+        { stage: 5, at: '2025-12-18T16:00:00', by: '刘洋' }
       ]
     },
     {
       id: 'RW-2025-006', type: '档案文献选编', topicId: 'T-011', topicName: '本地名人文书档案选编',
-      status: 'DONE', paused: false, stage: 6,
+      status: 'DONE', paused: false, stage: 5,
       planStart: '2025-12-20', planEnd: '2026-05-31',
       team: { leader: '刘洋', collector: '陈静', editor: '李文华', publisher: '刘洋', promoter: '', archivist: '陈静' },
       note: '一人一辑，附人物小传与年表。',
@@ -527,9 +537,8 @@
         { stage: 1, at: '2025-12-26T10:10:00', by: '刘洋' },
         { stage: 2, at: '2026-01-20T14:30:00', by: '陈静' },
         { stage: 3, at: '2026-02-26T09:50:00', by: '李文华' },
-        { stage: 4, at: '2026-03-30T11:10:00', by: '李文华' },
-        { stage: 5, at: '2026-04-28T15:20:00', by: '刘洋' },
-        { stage: 6, at: '2026-05-26T15:40:00', by: '刘洋' }
+        { stage: 4, at: '2026-04-28T15:20:00', by: '刘洋' },
+        { stage: 5, at: '2026-05-26T15:40:00', by: '刘洋' }
       ]
     },
     {
@@ -650,9 +659,24 @@
     {
       id: 'T-003', name: '本市水利建设档案史料汇编', status: 'NOT_STARTED',
       createdAt: '2026-08-20T10:32:00', createdBy: '赵志远',
-      team: '', budget: '', fundingSources: [], subsidy: '',
-      background: '', content: '', plan: '', guarantee: '', comment: '',
-      attachments: [],
+      team: '组长：赵志远（馆长，主持完成《本市行政区划沿革》等编研项目）；成员：陈静（保管利用科，负责水利全宗调阅与核对）、刘洋（负责图件整理与成果校核）。',
+      budget: '90000', fundingSources: ['SELF', 'SUBSIDY'], subsidy: '30000',
+      background: '1. 立项依据：本市河道治理、水库建设与防汛档案利用频繁，尚无系统的水利史料汇编；\n' +
+        '2. 背景介绍：涉及水利、城建、民政等全宗约 2,400 卷，另有工程图件 300 余幅，年代跨 1950 至 2020 年；\n' +
+        '3. 创新点：按「流域—工程—管理」三层编排，工程图件与批复文件对照收录。',
+      content: '1. 项目内容：普查水利类档案，选录批复、设计与验收文件，完成转录、编排与辅文编写；\n' +
+        '2. 项目目标：2026 年 11 月完成选材，2027 年 3 月完成初稿，2027 年 6 月完成审核校定。',
+      plan: '1. 工作思路：先按流域建立工程台账，再逐项配齐批复与图件；\n' +
+        '2. 工作计划：分普查建账、选材转录、编排成稿三个阶段推进；\n' +
+        '3. 工作方法：档案原文与编者文字分离，图件统一著录工程名称、桩号与绘制年份。',
+      guarantee: '1. 前期保障：已完成水利全宗普查，形成工程台账初稿；\n' +
+        '2. 人才保障：团队熟悉水利类档案与工程图件识读；\n' +
+        '3. 硬件保障：配备大幅面扫描设备 1 台、专业工作站 2 台。',
+      comment: '',
+      attachments: [
+        { name: '水利全宗普查表.xlsx', size: 156672 },
+        { name: '工程台账（初稿）.xlsx', size: 84224 }
+      ],
       review: null
     },
     {
@@ -679,7 +703,10 @@
       plan: '1. 工作思路：以政府批复文件为准；\n2. 工作计划：先做年表再做图；\n3. 工作方法：逐条标注文号与日期。',
       guarantee: '1. 前期保障：年表已完成；\n2. 人才保障：具备地图编制协作资源；\n3. 硬件保障：绘图软件已配置。',
       comment: '同意立项。（盖章）\n2026 年 2 月 12 日',
-      attachments: [],
+      attachments: [
+        { name: '区划变更年表（1949—2025）.xlsx', size: 143360 },
+        { name: '区划调整示意图（草）.pdf', size: 2359296 }
+      ],
       review: null
     },
     {
@@ -933,7 +960,7 @@
       ]
     },
     { id: 'task', label: '编研任务', icon: 'clipboard-list', route: '#/task' },
-    { id: 'review', label: '审核校定', icon: 'file-check', route: '#/review' },
+    { id: 'review', label: '流程审核', icon: 'file-check', route: '#/review' },
     { id: 'product', label: '编研成果', icon: 'book-open', route: '#/product' },
     { id: 'archive', label: '材料归档', icon: 'archive', route: '#/archive' },
     {
@@ -942,6 +969,8 @@
         { id: 'system-users', label: '用户管理', icon: 'users', route: '#/system/users' },
         { id: 'system-flow', label: '流程配置', icon: 'workflow', route: '#/system/flow' },
         { id: 'system-archive', label: '归档设置', icon: 'list-checks', route: '#/system/archive' },
+        /* 评审要求：审核规则放在归档设置模块下（数据对齐参照系统"敏感内容管理"） */
+        { id: 'system-audit-rules', label: '审核规则', icon: 'shield-check', route: '#/system/audit-rules' },
         { id: 'system-dict', label: '数据字典', icon: 'database', route: '#/system/dict' },
         /* 以下两项按评审要求排在「数据字典」之后，原型先不实现（走规划说明页） */
         { id: 'system-log', label: '日志管理', icon: 'file-text', route: '#/system/log' },
@@ -1004,8 +1033,14 @@
         { id: 'FR-2', userId: 'U-004', name: '陈静', roleLabel: '档案收集人员', dept: '保管利用科' }
       ]
     },
-    { key: 'deputy', name: '主管副馆长审批', icon: 'file-check', desc: '配置此环节允许审核的人员', reviewers: [] },
-    { key: 'chief', name: '馆长审批', icon: 'check-circle', desc: '配置此环节允许审核的人员', reviewers: [] }
+    { key: 'deputy', name: '主管副馆长审批', icon: 'file-check', desc: '配置此环节允许审核的人员',
+      reviewers: [
+        { id: 'FR-3', userId: 'U-006', name: '孙丽', roleLabel: '主管副馆长', dept: '馆领导' }
+      ] },
+    { key: 'chief', name: '馆长审批', icon: 'check-circle', desc: '配置此环节允许审核的人员',
+      reviewers: [
+        { id: 'FR-4', userId: 'U-001', name: '赵志远', roleLabel: '馆长', dept: '馆领导' }
+      ] }
   ];
 
   /* ======================================================================
@@ -1078,7 +1113,8 @@
     }
     function history(startYear) {
       var out = [];
-      for (var i = 1; i <= 6; i++) {
+      /* 去掉「辅文编写」后只有 5 个阶段 */
+      for (var i = 1; i <= 5; i++) {
         out.push({
           stage: i,
           at: new Date(Date.UTC(startYear, i - 1, 10 + (i % 3) * 4, 9, 30)).toISOString(),
@@ -1095,7 +1131,7 @@
       var id = 'RW-' + (y - 1) + '-' + String(300 + i).padStart(3, '0');
       TASKS.push({
         id: id, type: p.type, topicId: null, topicName: p.title,
-        status: 'DONE', paused: false, stage: 6,
+        status: 'DONE', paused: false, stage: 5,
         planStart: (y - 1) + '-03-01', planEnd: y + '-06-30',
         team: team(i),
         note: '历史任务：成果《' + p.title + '》的编研过程记录（选题档案已归档）。',
@@ -1127,18 +1163,17 @@
     });
 
     /* ② 在建任务：让「任务进度分布」有足够样本（否则只有 3 个在建任务，图表几乎全空）。
-       阶段分布目标 3/3/2/2/2/2 = 14 个在建任务；已有 3 个（第 2、3、5 阶段），
-       这里补第 1×3、第 2×2、第 3×1、第 4×2、第 5×1、第 6×2。 */
+       去掉「辅文编写」后按 5 个阶段分布：已有 3 个（第 2×2、第 4×1），
+       这里补第 1×3、第 2×1、第 3×2、第 4×3、第 5×2 = 11 个。 */
     /* 阶段分布目标 3/3/2/2/2/2 = 14；类型按「让任务与成果两张图在同一行序下都单调不增」配平：
        已在建/未开始的任务占 汇编×2、大事记×1、组织沿革×1，
        这里再补 汇编×2、选编×2、专题概要×1、年鉴年谱×1、咨政报告×1、史志成果×1、论著文章×1、知识图谱×1、展览展示×1。 */
     var plan = [
       { stage: 1, types: ['档案文献汇编', '档案文献汇编', '档案文献选编'] },
-      { stage: 2, types: ['档案文献选编', '专题概要'] },
-      { stage: 3, types: ['年鉴年谱'] },
-      { stage: 4, types: ['咨政报告', '史志成果'] },
-      { stage: 5, types: ['论著文章'] },
-      { stage: 6, types: ['知识图谱', '展览展示'] }
+      { stage: 2, types: ['专题概要'] },
+      { stage: 3, types: ['年鉴年谱', '档案文献选编'] },
+      { stage: 4, types: ['咨政报告', '史志成果', '论著文章'] },
+      { stage: 5, types: ['知识图谱', '展览展示'] }
     ];
     var names = [
       '本市教育年鉴（2026）', '城市更新档案史料汇编', '本市非物质文化遗产档案选编',
@@ -1179,13 +1214,12 @@
     { stage: 2, name: '史料支撑情况说明', category: '选材材料', format: 'DOCX', pages: 8, carrier: '电子', retention: '长期' },
     { stage: 3, name: '编排稿（送审稿）', category: '过程稿', format: 'DOCX', pages: 320, carrier: '电子', retention: '定期' },
     { stage: 3, name: '原文校勘记', category: '过程稿', format: 'DOCX', pages: 26, carrier: '电子', retention: '永久' },
-    { stage: 4, name: '辅文（序言・编辑说明）', category: '辅文', format: 'DOCX', pages: 14, carrier: '电子', retention: '长期' },
-    { stage: 4, name: '注释与索引表', category: '辅文', format: 'XLSX', pages: 22, carrier: '电子', retention: '长期' },
-    { stage: 5, name: '审校记录（三审三校）', category: '审校记录', format: 'DOCX', pages: 36, carrier: '纸质', retention: '永久' },
-    { stage: 5, name: '成果定稿', category: '过程稿', format: 'DOCX', pages: 340, carrier: '电子', retention: '永久' },
-    { stage: 6, name: '成果正式文件', category: '成果文件', format: 'PDF', pages: 356, carrier: '电子', retention: '永久' },
-    { stage: 6, name: '发布与推介材料', category: '成果文件', format: 'DOCX', pages: 12, carrier: '电子', retention: '长期' },
-    { stage: 6, name: '归档说明（含元数据）', category: '归档材料', format: 'DOCX', pages: 6, carrier: '电子', retention: '永久' }
+    /* 辅文相关的归档材料并入第 3 阶段（加工编排）之后不再单列，见 TASK_STAGES 说明 */
+    { stage: 4, name: '审校记录（三审三校）', category: '审校记录', format: 'DOCX', pages: 36, carrier: '纸质', retention: '永久' },
+    { stage: 4, name: '成果定稿', category: '过程稿', format: 'DOCX', pages: 340, carrier: '电子', retention: '永久' },
+    { stage: 5, name: '成果正式文件', category: '成果文件', format: 'PDF', pages: 356, carrier: '电子', retention: '永久' },
+    { stage: 5, name: '发布与推介材料', category: '成果文件', format: 'DOCX', pages: 12, carrier: '电子', retention: '长期' },
+    { stage: 5, name: '归档说明（含元数据）', category: '归档材料', format: 'DOCX', pages: 6, carrier: '电子', retention: '永久' }
   ];
 
   var ARCHIVE_ITEMS = [];
@@ -1311,6 +1345,14 @@
     ['初等教育', '小学教育'], ['中等教育', '中学教育']
   ];
 
+  /** 这条内容说明当前用的是第几种写法（没带写法说明就返回 -1） */
+  function outlineTailIndex(note) {
+    for (var i = 0; i < OUTLINE_NOTE_TAILS.length; i++) {
+      if (String(note || '').indexOf(OUTLINE_NOTE_TAILS[i]) >= 0) return i;
+    }
+    return -1;
+  }
+
   /** 从选题名称推出「核心主题」：去掉汇编/史料/资料等收尾词 */
   function outlineCore(topicName) {
     var s = String(topicName || '').replace(/[（(].*?[)）]/g, '').trim();
@@ -1406,12 +1448,20 @@
         targets.push(i);
       }
     }
-    var k = ((rec.regenSeq || 0) % OUTLINE_NOTE_TAILS.length);
-    if (mode === 'node') k = (k + 1) % OUTLINE_NOTE_TAILS.length;
-    var tail = OUTLINE_NOTE_TAILS[k];
 
+    var usedVariants = {};
     targets.forEach(function (i) {
       var n = nodes[i];
+      /* 每条都换成"与它当前不同的下一种写法" ——
+         否则重新生成可能正好轮回到原来的写法，用户点了看不出任何变化
+         （种子大纲出来后才暴露：同一提示词生成的稿子本来就在同一个写法上）。 */
+      var cur = outlineTailIndex(n.note);
+      var k = cur < 0
+        ? ((rec.regenSeq || 0) % OUTLINE_NOTE_TAILS.length)
+        : (cur + 1) % OUTLINE_NOTE_TAILS.length;
+      usedVariants[k] = true;
+      var tail = OUTLINE_NOTE_TAILS[k];
+
       var swapped = n.title;
       OUTLINE_TITLE_SYNONYMS.forEach(function (pair) {
         if (n.title.indexOf(pair[0]) >= 0 && n.title.indexOf(pair[1]) < 0) {
@@ -1423,23 +1473,310 @@
       nodes[i] = Object.assign({}, n, { title: swapped, note: base + ' ' + tail });
     });
 
+    var variantText = Object.keys(usedVariants).map(function (k) { return '第 ' + (+k + 1) + ' 种'; }).join('、');
     var t = nodes[idx];
+    var titleChanged = targets.some(function (i) { return nodes[i].title !== rec.nodes[i].title; });
     var thinking = (rec.thinking || []).concat([
       '—— 重新生成 ——',
       '目标：' + (mode === 'sub'
         ? '第 ' + t.level + ' 级标题「' + t.title + '」及其 ' + (targets.length - 1) + ' 个子标题'
         : '标题「' + t.title + '」'),
       '读取补充提示词：「' + (String(prompt).length > 42 ? String(prompt).slice(0, 42) + '…' : prompt) + '」',
-      '保持层级与编号不变，标题' + (targets.some(function (i) { return nodes[i].title !== rec.nodes[i].title; })
-        ? '按提示词做同义改写' : '措辞已稳定、保持不变') + '，内容说明重写为第 ' + (k + 1) + ' 种写法',
+      '保持层级与编号不变，标题' + (titleChanged ? '按提示词做同义改写' : '措辞已稳定、保持不变') +
+        '，内容说明重写为' + (variantText || '新的') + '写法（与原稿不同）',
       '已更新 ' + targets.length + ' 条标题的内容说明'
     ]);
 
-    return { nodes: nodes, thinking: thinking, targets: targets.length, variant: k };
+    return { nodes: nodes, thinking: thinking, targets: targets.length,
+      variant: Object.keys(usedVariants).map(Number)[0] };
   }
 
-  /* 每个任务的大纲：初始为空（等用户写提示词后生成），结构由 store.outlineOf 里补齐 */
-  var OUTLINES = {};
+  /* ======================================================================
+     补齐档案目录：素材库里的每一条素材都应当来自档案目录（系统前提）
+
+     种子里 36 件素材的档号，只有 3 条能在 21 条目录样本里找到 ——
+     「查看目录与文件」上线后，这个缺口会直接表现成"素材的目录全是未著录"。
+     这里按素材补齐目录条目：题名 / 全宗 / 年度 直接取素材自身的字段，
+     责任者按全宗沿用已有条目（或按全宗名推），页数按档号推导，其余给合理默认值。
+     素材是"已经数字化并入库"的东西，所以补出来的条目 digitized 一律为 true。
+     ====================================================================== */
+  (function fillCatalogFromMaterials() {
+    var AUTHOR_BY_FONDS = {};
+    ARCHIVE_CATALOG.forEach(function (a) { if (!AUTHOR_BY_FONDS[a.fonds]) AUTHOR_BY_FONDS[a.fonds] = a.author; });
+    /* 目录样本里没有的全宗，按主管单位补上 */
+    var EXTRA_AUTHOR = {
+      '交通全宗': '市交通局', '城建全宗': '市建设局',
+      '个人全宗': '市档案馆', '照片全宗': '市档案馆'
+    };
+    var CATEGORY_BY_PREFIX = { ZP: '照片档案', KJ: '科技档案', CW: '会计档案' };
+
+    MATERIALS.forEach(function (m) {
+      var exists = ARCHIVE_CATALOG.some(function (a) { return a.archiveNo === m.archiveNo; });
+      if (exists) return;
+      var h = 0;
+      for (var i = 0; i < m.archiveNo.length; i++) h = (h * 31 + m.archiveNo.charCodeAt(i)) % 9973;
+      ARCHIVE_CATALOG.push({
+        id: 'A-' + String(ARCHIVE_CATALOG.length + 1).padStart(3, '0'),
+        archiveNo: m.archiveNo,
+        title: m.title,
+        fonds: m.fonds || '',
+        category: CATEGORY_BY_PREFIX[String(m.archiveNo).split('-')[0]] || '文书档案',
+        year: m.year || '',
+        author: AUTHOR_BY_FONDS[m.fonds] || EXTRA_AUTHOR[m.fonds] || '市档案馆',
+        retention: h % 5 === 0 ? '长期' : '永久',
+        security: h % 11 === 0 ? '内部' : '公开',
+        pages: 4 + (h % 24),
+        digitized: true,
+        summary: (m.fonds || '') + (m.year ? m.year + ' 年' : '') + '「' + m.title + '」相关文书',
+        fullText: ''
+      });
+    });
+  })();
+
+  /* 素材的「备注」：已有的不动，没有的从对应档案目录的摘要带过来 ——
+     素材本来就是从目录里挑出来的，摘要正好说明"这条素材是什么"，
+     否则列表新增的备注列对 36 条种子数据全是空的。 */
+  (function fillMaterialNotes() {
+    var byNo = {};
+    ARCHIVE_CATALOG.forEach(function (a) { byNo[a.archiveNo] = a; });
+    MATERIALS.forEach(function (m) {
+      var a = byNo[m.archiveNo];
+      if (!m.note) m.note = a ? (a.summary || '') : '';
+      /* 档案门类同理：素材取自档案目录，门类直接沿用目录里的 */
+      if (!m.category) m.category = a ? a.category : '文书档案';
+    });
+  })();
+
+  /* ======================================================================
+     第 2 阶段「确定选材」的选材库
+
+     一个任务一份选材库。一条选材 = 从素材库挑中的一份素材 + **选入范围**
+     （整个文件，或其中某一页 / 某几页）—— 评审明确要求"可以整份加入，也可以只加入几页"。
+     pageCount 是加入时的快照（取自档案目录著录的页数），用于展示"整份 N 页 / 第 x-y 页"。
+     ====================================================================== */
+  var SELECTIONS = {
+    'RW-2026-001': {
+      taskId: 'RW-2026-001',
+      seq: 4,
+      entries: [
+        {
+          id: 'SE-001', taskId: 'RW-2026-001', source: 'library', materialId: 'M-001',
+          title: '县立师范讲习所沿革与课程表', archiveNo: 'JY-1932-Y-003', category: '文书档案',
+          tagIds: ['G-001'], scope: 'all', pages: [], pageCount: 12,
+          note: '', file: null,
+          addedAt: '2026-05-11T09:20:00', addedBy: '王建国'
+        },
+        {
+          id: 'SE-002', taskId: 'RW-2026-001', source: 'library', materialId: 'M-006',
+          title: '普及小学教育规划与实施简报', archiveNo: 'JY-1958-Y-072', category: '文书档案',
+          tagIds: ['G-002', 'G-007'], scope: 'all', pages: [], pageCount: 18,
+          note: '', file: null,
+          addedAt: '2026-05-11T09:26:00', addedBy: '王建国'
+        },
+        {
+          id: 'SE-004', taskId: 'RW-2026-001', source: 'library', materialId: 'M-037',
+          title: '全市教育工作会议实况录像', archiveNo: 'SX-2016-Y-014', category: '声像档案',
+          tagIds: ['G-002'], scope: 'all', pages: [], pageCount: 0,
+          note: '', file: { name: '全市教育工作会议实况录像.mp4', size: 428000000, duration: 3720 },
+          addedAt: '2026-05-13T10:05:00', addedBy: '陈静'
+        },
+        {
+          id: 'SE-003', taskId: 'RW-2026-001', source: 'library', materialId: 'M-012',
+          title: '战时难民救济款项发放清册', archiveNo: 'MZ-1939-Y-021', category: '文书档案',
+          tagIds: ['G-003'], scope: 'pages', pages: [2, 3], pageCount: 9,
+          note: '', file: null,
+          addedAt: '2026-05-12T15:40:00', addedBy: '陈静'
+        }
+      ]
+    },
+    /* RW-2026-003（行政区划沿革，已推进到第 5 阶段、成果审核中）的选材库：
+       ① 它是"发布审核通过 → 自动归档《素材目录》"这条链路的演示任务，
+          选材库为空的话归档出来的目录表就是空的；
+       ② 素材本身复用已有素材与馆藏目录，不新增素材，避免影响素材库的件数口径 */
+    'RW-2026-003': {
+      taskId: 'RW-2026-003',
+      seq: 4,
+      entries: [
+        {
+          id: 'SE-004', taskId: 'RW-2026-003', source: 'library', materialId: 'M-028',
+          title: '城市总体规划说明书（初稿）', archiveNo: 'GH-1957-Y-006', category: '文书档案',
+          tagIds: ['G-007'], scope: 'all', pages: [], pageCount: 46,
+          note: '规划区范围与行政区划的对应关系见附图。', file: null,
+          addedAt: '2026-03-02T09:30:00', addedBy: '陈静'
+        },
+        {
+          id: 'SE-003', taskId: 'RW-2026-003', source: 'library', materialId: 'M-029',
+          title: '旧城改造详细规划方案', archiveNo: 'GH-1983-Y-058', category: '文书档案',
+          tagIds: ['G-007'], scope: 'pages', pages: [4, 5, 6, 7], pageCount: 32,
+          note: '涉及街道办事处辖域调整的部分。', file: null,
+          addedAt: '2026-03-02T09:36:00', addedBy: '陈静'
+        },
+        {
+          id: 'SE-002', taskId: 'RW-2026-003', source: 'library', materialId: 'M-032',
+          title: '城市旧影：主要街区历史照片专辑', archiveNo: 'MZ-1985-Z-012', category: '照片档案',
+          tagIds: ['G-009'], scope: 'all', pages: [], pageCount: 60,
+          note: '用于核对街区与乡镇辖域的历史范围。', file: null,
+          addedAt: '2026-03-05T14:20:00', addedBy: '刘洋'
+        },
+        {
+          id: 'SE-001', taskId: 'RW-2026-003', source: 'archive', materialId: null,
+          title: '城镇精简职工安置情况报告', archiveNo: 'MZ-1962-Y-088', category: '文书档案',
+          tagIds: [], scope: 'all', pages: [], pageCount: 30,
+          note: '馆藏目录检索所得，反映建制调整后的人员安置。', file: null,
+          addedAt: '2026-03-05T14:28:00', addedBy: '刘洋'
+        }
+      ]
+    }
+  };
+
+  /* 每个任务的大纲。
+     RW-2026-001 已经有生成好的大纲 —— 它在种子里已经推进到第 2/3 阶段，
+     按第 1 阶段的门禁「大纲已确认」它本来就该有；其余任务留空（去点「AI生成大纲」）。
+     内容由 buildOutline 现算，与界面上点按钮生成的结果完全一致。 */
+  var OUTLINES = {
+    'RW-2026-001': (function () {
+      var plan = buildOutline(TASKS[0], '按「学制变迁—学校沿革—教育人物」三条线索编排，重点保证民国时期教育史料的完整性。', { materials: MATERIALS.length });
+      return {
+        taskId: 'RW-2026-001',
+        prompt: '按「学制变迁—学校沿革—教育人物」三条线索编排，重点保证民国时期教育史料的完整性。',
+        nodes: plan.nodes,
+        thinking: plan.thinking,
+        regenSeq: 1,
+        nextId: plan.nodes.length + 1,
+        updatedAt: '2026-05-06T10:20:00'
+      };
+    })(),
+    /* RW-2026-003 是"已推进到第 5 阶段、成果正在审核中"的演示任务：
+       它的大纲与正文一起种下，这样成果发布审核界面右侧能看到真实的成果文件 */
+    'RW-2026-003': {
+      taskId: 'RW-2026-003',
+      prompt: '以政府批复文件为准，按「分期—事项」编排，逐条标注文号与日期。',
+      nodes: [
+        { id: 'n1', level: 1, title: '编纂说明', collapsed: false,
+          note: '说明本汇编的编纂目的、收录范围、时间断限与编排体例，交代史料来源及利用注意事项。' },
+        { id: 'n2', level: 2, title: '编纂目的与收录范围', collapsed: false,
+          note: '说明汇编对厘清本市行政区划变迁、服务区划管理与编史修志的作用，界定收录的批复、通告与图件范围。' },
+        { id: 'n3', level: 2, title: '体例与编排说明', collapsed: false,
+          note: '说明按历史分期分章、章内以时间为序编排的规则，以及文号、日期与图件的著录方式。' },
+        { id: 'n4', level: 1, title: '行政区划沿革概述', collapsed: false,
+          note: '综述本市自民国以来行政区划的总体变迁脉络、阶段特征与主要调整事项。' },
+        { id: 'n5', level: 2, title: '民国时期的区划调整（1912—1949）', collapsed: false,
+          note: '收录废府设道、设县与区乡调整的批令与图件，反映新旧区划体系的交替。' },
+        { id: 'n6', level: 2, title: '新中国成立初期的区划调整（1949—1978）', collapsed: false,
+          note: '收录专区与市县的设立、撤并、更名与辖域调整文件。' },
+        { id: 'n7', level: 2, title: '改革开放以来的区划调整（1978—2025）', collapsed: false,
+          note: '收录撤县设市、撤市设区、街道乡镇调整等批复，反映城镇化进程中的区划变化。' },
+        { id: 'n8', level: 1, title: '附录与索引', collapsed: false,
+          note: '收录区划变更一览表、图件目录与文献出处索引，便于检索核对。' },
+        { id: 'n9', level: 2, title: '行政区划变更一览表', collapsed: false,
+          note: '按年月列出变更事项、依据文号与变更前后名称，条末注明档号。' },
+        { id: 'n10', level: 2, title: '文献出处与档号索引', collapsed: false,
+          note: '汇总本汇编引用档案的全宗号、目录号与案卷号，编制索引备查。' }
+      ],
+      thinking: [
+        '读取提示词：「以政府批复文件为准，按「分期—事项」编排，逐条标注文号与日期。」',
+        '解析编研意图：选题「本市行政区划沿革（1949—2025）」· 编研类型「组织沿革」',
+        '检索馆藏目录与素材库：命中 68 条候选素材（11 个主题簇）',
+        '确定内容边界：以「行政区划变更」为主线，剔除与本专题无关的记载',
+        '拟订章节层级：一级标题 3 个、二级标题 7 个',
+        '为每个标题生成主要内容说明（共 10 条），交回右侧编辑区'
+      ],
+      regenSeq: 1,
+      nextId: 11,
+      updatedAt: '2026-08-20T15:40:00'
+    }
+  };
+
+  /* ======================================================================
+     第 3 阶段「加工编排」的正文
+
+     一个任务一份：{ taskId, chapters: { <大纲节点 id>: { text, savedAt, savedBy } } }
+     用**大纲节点 id** 当章节键：导航区就是大纲，编排区写的就是这个节点的正文。
+     重新生成大纲会让标题与正文错位（id 不变、标题可能变），这点记在 README 待确认里。
+     ====================================================================== */
+  var COMPOSES = {
+    'RW-2026-001': {
+      taskId: 'RW-2026-001',
+      chapters: {
+        n1: {
+          text: '本汇编选录本市教育事业发展历程中的档案史料，起自清末书院改学堂，讫于 2025 年底。\n\n' +
+            '收录范围以本市教育行政、学校教育与教育人物三类档案为主，兼收省级以上文件中涉及本市教育的部分。' +
+            '所收史料均注明出处与档号，重要文件附影印件。',
+          savedAt: '2026-05-14T14:05:00', savedBy: '李文华'
+        },
+        n2: {
+          text: '编纂本汇编的目的，在于集中保存本市教育事业发展过程中形成的档案史料，' +
+            '为教育史研究、编史修志与资政参考提供系统的第一手材料。',
+          savedAt: '2026-05-14T14:12:00', savedBy: '李文华'
+        },
+        /* n3 是**故意播入的演示稿**：含错别字、纪年不一致、不规范表述、隐私信息，
+           以及命中审核规则的敏感内容 —— 让三类审核一打开就有东西可看（详见 README 审核校定一节） */
+        n3: {
+          text: '本汇编收录范围复盖全市各级各类学校，史料按排以时间为序。\n\n' +
+            '民国 25 年（公元 1932 年）县立师范讲习所改办为县立简易师范学校，' +
+            '建国后该校几经调整，1958 年定名为市第二师范学校。\n\n' +
+            '所收材料中涉及重大政治事件及敏感历史问题的记载，一律暂不收录；' +
+            '涉及公民隐私的材料需另行审定后使用。\n\n' +
+            '联系人为张某某，身份证号 330106199001011234，电话 13800138000，' +
+            '通讯地址与联系方式见卷内备考表。\n\n' +
+            '经费部分依据各校逐年报送的帐目清册统计，其中学田租息、地方附加捐与省款补助三项合计占七成以上；' +
+            '1956 年以前的部分数据缺环，编者按现存报表作了推算，并在各表下逐一注明推算依据。' +
+            '需要说明的是，个别年份的收支差额较大，与当年校舍修建支出集中有关；' +
+            '涉及不宜公开的内部讨论记录，本汇编一律不收录，仅保留结论性表述。\n\n' +
+            '各校报送的材料在体例上并不统一，有以学年为单位的，也有以自然年为单位的，' +
+            '本汇编统一折算为自然年，折算口径见附录二。',
+          savedAt: '2026-05-15T09:20:00', savedBy: '李文华'
+        }
+      },
+      savedAt: '2026-05-14T14:12:00', savedBy: '李文华'
+    },
+    /* RW-2026-003 的正文：成果发布审核界面右侧要展示的"编研成果文件" */
+    'RW-2026-003': {
+      taskId: 'RW-2026-003',
+      chapters: {
+        n1: {
+          text: '本汇编收录本市行政区划变迁过程中形成的批复、通告、图件与统计表，起自 1912 年，讫于 2025 年底。\n\n' +
+            '收录范围以省、市政府及民政部门关于区划调整的批复文件为主，兼收涉及本市辖域变化的上级文件与图件。' +
+            '所收文件均标注文号与档号，重要批复附影印件。',
+          savedAt: '2026-08-18T10:10:00', savedBy: '李文华'
+        },
+        n2: {
+          text: '编纂本汇编，在于集中保存区划变迁的原始依据，为区划管理、边界争议调处与编史修志提供系统的第一手材料。',
+          savedAt: '2026-08-18T10:16:00', savedBy: '李文华'
+        },
+        n3: {
+          text: '全书按历史分期分章，章内以时间为序；同一事项涉及多次调整的，按批复时间先后排列并加注说明。',
+          savedAt: '2026-08-18T10:22:00', savedBy: '李文华'
+        },
+        n4: {
+          text: '本市行政区划自民国以来经历废府设道、专区撤并、撤县设市与撤市设区几个阶段，' +
+            '总体趋势是由分散的县乡体系逐步整合为市辖区与街道乡镇两级管理格局。',
+          savedAt: '2026-08-19T09:05:00', savedBy: '李文华'
+        },
+        n5: {
+          text: '民国初年废府设道，本境属道辖县；民国 20 年前后推行区乡制，县以下设区、乡（镇）、闾邻。\n\n' +
+            '民国 25 年（公元 1936 年）调整区乡边界，将邻县数乡划入，县的辖域自此基本定型。',
+          savedAt: '2026-08-19T09:20:00', savedBy: '李文华'
+        },
+        n6: {
+          text: '1949 年后本境设专区，辖数县；1958 年前后部分县撤并，1961 年恢复原建制。\n\n' +
+            '1970 年专区改称地区，1983 年实行市管县体制，本县划归本市管辖。',
+          savedAt: '2026-08-19T14:40:00', savedBy: '李文华'
+        },
+        n7: {
+          text: '改革开放以来，区划调整以城镇化为主线：1988 年撤县设市，2001 年撤市设区，' +
+            '此后陆续撤销城关镇与近郊乡镇，改设街道办事处。\n\n' +
+            '2015 年、2021 年两次调整街道管辖范围，将开发区代管区域纳入属地管理，区划格局延续至今。',
+          savedAt: '2026-08-20T15:30:00', savedBy: '李文华'
+        },
+        n8: {
+          text: '附录收录区划变更一览表与文献出处索引，便于按年月与文号检索核对。',
+          savedAt: '2026-08-20T15:36:00', savedBy: '李文华'
+        }
+      },
+      savedAt: '2026-08-20T15:36:00', savedBy: '李文华'
+    }
+  };
 
   /* ======================================================================
      演示数据版本
@@ -1450,10 +1787,121 @@
      因此每次改动种子数据都要把这个版本号加一：版本不一致时清掉本地数据、重新灌种子。
      ====================================================================== */
   /* 2026-09-22.1：RW-2026-001 进度重置到「生成大纲」+ 新增大纲数据集 */
-  var SEED_VERSION = '2026-09-22.1';
+  /* 2026-09-29.1：新增第 5 阶段「成果发布」——消息中心 + 三步审核流程 + 审核信息表；
+     流程配置的三个步骤都配上审核人（成果发布按它逐级推送） */
+  /* 2026-09-30.4：成果发布审核通过后自动归档四类材料（选题可行性评估表及附件 / 审核意见表 /
+     素材目录 / 编研成果定稿）；T-005 补两个立项附件、RW-2026-003 补选材库（目录表的演示数据） */
+  var SEED_VERSION = '2026-09-30.4';
+
+  /* ======================================================================
+     第 3 阶段「加工编排」的**本地模拟生成**（原型不调用大模型）
+
+     和"AI生成大纲"一样：按提示词 + 上下文拼出**确定性的**编者文字，
+     同一提示词给同一结果、换个提示词就换一种写法。
+       · generate(prompt, ctx)          → AI生成：一段编者文字
+       · expand(prompt, selected, ctx)  → AI扩写：把选中的内容扩写成一段
+     ====================================================================== */
+  var COMPOSE_LEADS = [
+    '就本段所涉问题，编者依据馆藏档案作如下说明：',
+    '按照编纂体例，现将有关情况梳理如下：',
+    '综合所收史料，可以看清这一段脉络：',
+    '现将查得的档案情况辑录如下：'
+  ];
+  var COMPOSE_POINTS = [
+    '所需材料在本馆馆藏中保存较为完整，可支撑本章的记述',
+    '相关文件在时间上前后衔接，能够反映其演变过程',
+    '档案记载与同期报刊、志书可以互相印证',
+    '个别年份的材料尚有缺环，需要辅以其他全宗的记载'
+  ];
+  var COMPOSE_TAILS = [
+    '以上情况，供编写与审核时参考。',
+    '本段所述均以档案原文为据，编者未作改动。',
+    '为保持史料原貌，引用时一律照录原文，异体字与旧地名加注说明。',
+    '凡涉及数字与统计口径者，均按档案记载照录，不作换算。'
+  ];
+
+  function hashText(t) {
+    var h = 0;
+    var str = String(t || '');
+    for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 99991;
+    return h;
+  }
+
+  /* 提示词里的领域词表：中文没有词间空格，靠词表命中比"按空格切"自然得多 */
+  var COMPOSE_TERMS = ['教育', '学制', '学校', '经费', '教师', '课程', '人物', '抗战', '救济', '规划',
+    '行政区划', '交通', '水利', '商会', '工业', '照片', '录像', '会议', '政策', '统计', '名录', '民国'];
+
+  /** 命中的领域词（用于"像回应了提示词"，也写进思考说明） */
+  function keywords(prompt) {
+    var t = String(prompt || '');
+    return COMPOSE_TERMS.filter(function (w) { return t.indexOf(w) >= 0; }).slice(0, 4);
+  }
+
+  /** 提示词的第一句（截断到 18 字）——用它当"本段围绕…"的主题 */
+  function promptTopic(prompt, fallback) {
+    var clause = String(prompt || '').replace(/[。；;.!?！？]/g, '，').split('，')[0].trim();
+    if (!clause) return fallback || '本段内容';
+    return clause.length > 18 ? clause.slice(0, 18) + '…' : clause;
+  }
+
+  function citeMaterials(ctx) {
+    var ms = (ctx && ctx.materials) || [];
+    if (!ms.length) return '';
+    return ms.slice(0, 2).map(function (m) {
+      return '《' + m.title + '》' + (m.archiveNo ? '（档号 ' + m.archiveNo + '）' : '');
+    }).join('、');
+  }
+
+  /**
+   * AI扩写：在**选中的原文**基础上补背景、补细节（带档案出处）、补意义。
+   * 保留选中内容本身（编者文字与档案原文分离的体例），只是把一段扩成三句。
+   */
+  function composeExpand(prompt, selected, ctx) {
+    ctx = ctx || {};
+    var picked = String(selected || '').trim();
+    var h = hashText(prompt + '|' + picked);
+    var kws = keywords(prompt);
+    var cite = citeMaterials(ctx);
+    var point = COMPOSE_POINTS[(h >> 2) % COMPOSE_POINTS.length];
+    var tail = COMPOSE_TAILS[(h >> 5) % COMPOSE_TAILS.length];
+    var focus = kws.length ? kws.join('、') : promptTopic(prompt, '本段');
+    var text =
+      '编者按：' + picked +
+      '就' + focus + '而言，' + point + '。' +
+      (cite ? '可与 ' + cite + ' 等档案互相参证。' : '') +
+      tail;
+    return {
+      text: text,
+      thinking: '保留选中原文 ' + picked.length + ' 字，补写背景/细节/意义三句，共 ' +
+        text.length + ' 字（本地模拟生成，未接大模型）'
+    };
+  }
+
+  function composeGenerate(prompt, ctx) {
+    ctx = ctx || {};
+    var h = hashText(prompt + '|' + (ctx.chapterTitle || ''));
+    var kws = keywords(prompt);
+    var lead = COMPOSE_LEADS[h % COMPOSE_LEADS.length];
+    var point = COMPOSE_POINTS[(h >> 3) % COMPOSE_POINTS.length];
+    var tail = COMPOSE_TAILS[(h >> 6) % COMPOSE_TAILS.length];
+    var topic = promptTopic(prompt, ctx.chapterTitle);
+    var cite = citeMaterials(ctx);
+    var body = lead + '本段围绕「' + topic + '」展开：' + point + '。' +
+      (cite ? '主要依据 ' + cite + ' 等档案。' : '') + tail;
+    return {
+      text: body,
+      thinking: '提示词关键词：' + (kws.join('、') || '（无）') +
+        '；参考本章要点与 ' + ((ctx.materials || []).length) + ' 件选材，写成 ' + body.length + ' 字（本地模拟生成，未接大模型）'
+    };
+  }
 
   App.mock = {
     SEED_VERSION: SEED_VERSION,
+    /* 审核规则（系统管理 · 归档设置 → 审核规则）：数据在 mock-audit.js 里，单独成文件避免这里过大 */
+    AUDIT_RULE_TYPES: (global.App.mockAudit || {}).AUDIT_RULE_TYPES || [],
+    AUDIT_CONTROL_FLAGS: (global.App.mockAudit || {}).AUDIT_CONTROL_FLAGS || [],
+    AUDIT_RULES: (global.App.mockAudit || {}).AUDIT_RULES || [],
+    AUDIT_SOURCE: (global.App.mockAudit || {}).AUDIT_SOURCE || {},
     ORG: ORG,
     USERS: USERS,
     FLOW_STEPS: FLOW_STEPS,
@@ -1463,6 +1911,8 @@
     NAV: NAV,
     TYPE_COLORS: TYPE_COLORS,
     STATUS_COLORS: STATUS_COLORS,
+    /* 第 3 阶段「加工编排」的本地模拟生成 */
+    compose: { generate: composeGenerate, expand: composeExpand },
     /* 材料归档 */
     ARCHIVE_FIELDS: ARCHIVE_FIELDS,
     ARCHIVE_FIELD_TYPES: ARCHIVE_FIELD_TYPES,
@@ -1481,6 +1931,10 @@
     TASKS: TASKS,
     /* 第 1 阶段「生成大纲」 */
     OUTLINES: OUTLINES,
+    /* 第 2 阶段「确定选材」 */
+    SELECTIONS: SELECTIONS,
+    /* 第 3 阶段「加工编排」 */
+    COMPOSES: COMPOSES,
     OUTLINE_MAX_LEVEL: OUTLINE_MAX_LEVEL,
     OUTLINE_LEVEL_LABELS: OUTLINE_LEVEL_LABELS,
     outline: {

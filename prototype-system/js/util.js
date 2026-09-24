@@ -20,6 +20,14 @@
 
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
+  /** 文件大小：184320 → 180.0 KB（原型里的附件只登记大小，不存实体文件） */
+  function fmtSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
   /** 千分位整数：1284600 → 1,284,600 */
   function fmtInt(n) {
     var num = Number(n) || 0;
@@ -100,6 +108,7 @@
 
   App.util = {
     escapeHtml: escapeHtml,
+    fmtSize: fmtSize,
     fmtInt: fmtInt,
     fmtWan: fmtWan,
     pctOf: pctOf,

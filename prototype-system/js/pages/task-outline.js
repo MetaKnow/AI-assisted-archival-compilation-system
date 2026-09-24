@@ -305,7 +305,7 @@
     outlineTaskId = t.id;
     var rec = S.outlineOf(t.id);
     if (sel.id && !findNode(rec, sel.id)) sel.id = null;   // 选中的标题被删/被覆盖后清掉
-    return '<section class="card outline-step">' +
+    return '<section class="card outline-step" data-task="' + esc(t.id) + '">' +
       '<div class="card-head">' +
         '<span>第 1 阶段 · 生成大纲</span>' +
         '<span class="spacer"></span>' +

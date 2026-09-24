@@ -6,11 +6,16 @@
      列表字段根据归档设置模块中的设置显示。
 
    原型处理：
-     · **列表列由配置驱动**：列取自 `store.archiveColumns()`（归档字段配置）。
-       本模块只负责按配置渲染，「归档设置」模块将来只改配置、不用改这里（见 README）。
+     · **列表列与录入表单都由配置驱动**：都取自 `store.archiveFields()`（归档设置里的字段字典）——
+       归档设置里加一个字段，材料归档的列表列与「新增 / 修改」表单会同时出现它。
      · 归档材料按编研任务组织：立项 3 件 + 各已完成阶段 2 件（成果阶段 3 件），
        已开始的任务都有材料；未开始的任务没有材料（可见空状态）。
        材料不逐件手写，按任务的阶段历史与团队归档人生成。
+     · **每条材料都可以修改，也可以新增**（评审要求）：行内「修改」+ 工具栏「新增 / 修改 / 删除」；
+       表单字段就是字段字典：「所属阶段」是结构化下拉，「素材目录」条目还能看到由选材库派生的目录表。
+     · 成果发布审核通过后，四类材料由数据层自动归档到本模块（`store.autoArchiveProduct`）：
+       选题可行性评估表及附件 / 审核意见表 / 素材目录 / 编研成果定稿；自动归档的条目标「自动归档」，
+       人工改过之后不再被自动归档覆盖。
      · 「序号」与「操作」两列固定，不参与字段配置。
    ========================================================================== */
 
@@ -21,17 +26,16 @@
   var U = App.ui;
   var S = App.store;
   var esc = App.util.escapeHtml;
+  var fmtSize = App.util.fmtSize;      /* 附件大小（与「选题立项」的附件展示同一套格式化） */
   var icon = App.icons.render;
 
   var state = {
     taskId: null,      // 当前查看的编研任务
     category: '',
     keyword: '',
-    selected: {}       // 勾选的归档材料（供「修改」「删除」使用）
+    selected: {},      // 勾选的归档材料（供「修改」「删除」使用）
+    formFiles: []      // 表单里登记的附件（原型只记文件名与大小，不做真实上传）
   };
-
-  /* 新增 / 修改 / 删除 的录入界面本次不生成（评审要求），点按钮给出明确提示 */
-  var FORM_TODO = '归档材料的录入界面尚未生成：当前模块只做列表展示与查看。';
 
   /* ------------------------------------------------------- 任务切换 */
 
@@ -76,7 +80,15 @@
   var CELL = {
     name: function (m) {
       return '<button type="button" class="link-btn" data-action="ar:view" data-id="' + esc(m.id) + '" ' +
-        'title="查看该材料的全部著录字段">' + esc(m.name) + '</button>';
+        'title="查看该材料的全部著录字段">' + esc(m.name) + '</button>' +
+        (m.auto === 'publish'
+          ? U.tag('自动归档', 'tag-accent', '由成果发布审核通过后自动归档' +
+            (m.flowNo ? '（流程 ' + m.flowNo + '）' : ''))
+          : '') +
+        ((m.attachments || []).length
+          ? '<span class="attach-chip" title="附件：' +
+            esc(m.attachments.map(function (a) { return a.name; }).join('；')) + '">' +
+            icon('paperclip') + m.attachments.length + '</span>' : '');
     },
     category: function (m) {
       return U.tag(m.category, App.mock.ARCHIVE_CATEGORY_TAG[m.category] || '');
@@ -131,7 +143,8 @@
     var sel = selectedKeys().length;
 
     return '<div class="toolbar">' +
-      '<button type="button" class="btn btn-primary" data-action="ar:new">' + icon('plus') + '新增</button>' +
+      '<button type="button" class="btn btn-primary" data-action="ar:new" ' +
+        'title="在当前编研任务下新增一条归档材料">' + icon('plus') + '新增</button>' +
       '<button type="button" class="btn" data-action="ar:edit"' +
         (sel === 1 ? '' : ' aria-disabled="true"') +
         ' title="' + (sel === 1 ? '修改选中的材料' : '请先勾选一件材料') + '">' +
@@ -176,8 +189,12 @@
           var html = fn ? fn(m) : renderRaw(m, f.key);
           return '<td class="ar-col ar-col-' + esc(f.key) + '">' + html + '</td>';
         }).join('') +
-        '<td class="col-actions"><button type="button" class="btn btn-sm btn-text" ' +
-          'data-action="ar:view" data-id="' + esc(m.id) + '">' + icon('eye') + '查看</button></td>' +
+        '<td class="col-actions"><div class="row-actions">' +
+          '<button type="button" class="btn btn-sm btn-text" ' +
+            'data-action="ar:view" data-id="' + esc(m.id) + '">' + icon('eye') + '查看</button>' +
+          '<button type="button" class="btn btn-sm btn-text" ' +
+            'data-action="ar:edit-one" data-id="' + esc(m.id) + '">' + icon('pencil') + '修改</button>' +
+        '</div></td>' +
       '</tr>';
     }).join('');
 
@@ -217,27 +234,246 @@
 
   /* ------------------------------------------------------------ 查看 */
 
+  /** 附件清单（只读展示）：原型不存实体文件，只有名称 / 大小 / 格式 */
+  function attachReadHtml(m) {
+    var list = m.attachments || [];
+    if (!list.length) return '<span class="muted">无附件</span>';
+    return '<div class="attach-list">' + list.map(function (a) {
+      return '<div class="attach-item">' + icon('file-text') +
+        '<span class="attach-name" title="' + esc(a.name) + '">' + esc(a.name) + '</span>' +
+        '<span class="attach-tag">' + esc(a.format || '—') + '</span>' +
+        '<span class="attach-size">' + esc(fmtSize(a.size)) + '</span>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+
+  /** 「素材目录」的目录表：由该任务的选材库派生（只有目录，没有素材文件） */
+  function catalogHtml(m) {
+    var rows = S.archiveCatalog(m);
+    if (!rows.length) {
+      return '<div class="data-note">' + icon('info') +
+        '<span>该任务的选材库为空，因此没有目录数据（目录表由「确定选材」的选材库派生）。</span></div>';
+    }
+    return '<div class="table-scroll"><table class="table ar-catalog-table">' +
+      '<thead><tr><th class="col-idx">序号</th><th>素材题名</th><th class="col-no">档号</th>' +
+        '<th class="col-status">门类</th><th class="col-time">来源</th><th>选入范围</th>' +
+        '<th class="col-time">页数</th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        return '<tr><td class="col-idx tnum">' + r.no + '</td>' +
+          '<td>' + esc(r.title) + '</td>' +
+          '<td class="col-no mono">' + esc(r.archiveNo) + '</td>' +
+          '<td>' + esc(r.category || '—') + '</td>' +
+          '<td>' + esc(r.source) + '</td>' +
+          '<td>' + esc(r.scope) + '</td>' +
+          '<td class="tnum">' + (r.pageCount || '—') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="data-note">' + icon('info') + '<span>共 <b>' + rows.length +
+        '</b> 条，由该任务「确定选材」环节的选材库派生；此处只归档<b>目录表</b>，不含素材文件。</span></div>';
+  }
+
   function openDetail(m) {
     var fields = S.archiveFields();
-    var rows = [['材料名称', esc(m.name)]];
+    /* 第一行就是字典里的「材料名称」（字段顺序即字典顺序），别再写一行同样的 */
+    var rows = [];
     fields.forEach(function (f) {
       var fn = CELL[f.key];
       rows.push([f.name, fn ? fn(m) : renderRaw(m, f.key)]);
     });
     rows.push(['所属编研任务', '<span class="tnum">' + esc(m.taskId) + '</span>　' + esc(m.taskTopic)]);
+    if (m.auto === 'publish') {
+      rows.push(['归档来源', '由成果发布审核通过后<b>自动归档</b>' +
+        (m.flowNo ? '（流程 <span class="tnum">' + esc(m.flowNo) + '</span>' : '') +
+        (m.productId ? '，成果 <span class="tnum">' + esc(m.productId) + '</span>' : '') +
+        (m.flowNo ? '）' : '')]);
+    }
+    if (m.updatedAt) {
+      rows.push(['最近修改', esc(App.util.fmtDateTime(m.updatedAt)) + '　' + esc(m.updatedBy || '')]);
+    }
 
-    U.modal({
-      title: '归档材料 · ' + m.name,
-      width: 720,
-      cancelText: null,
-      okText: '关闭',
-      body: '<dl class="desc">' + rows.map(function (r) {
+    var isCatalog = S.archiveCatalog(m).length > 0 || String(m.name).indexOf('素材目录') >= 0;
+    var body = '<dl class="desc">' + rows.map(function (r) {
         return '<dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd>';
       }).join('') + '</dl>' +
+      '<h3 class="ar-sub">附件' + ((m.attachments || []).length
+        ? '（' + m.attachments.length + '）' : '') + '</h3>' + attachReadHtml(m) +
+      (isCatalog ? '<h3 class="ar-sub">素材目录表</h3>' + catalogHtml(m) : '') +
       '<div class="data-note" style="margin-top:var(--s3)">' + icon('info') +
         '<span>这里列出该材料的<b>全部著录字段</b>（含未在列表显示的字段）；' +
         '列表显示哪些列由「归档设置」决定。</span>' +
-      '</div>'
+      '</div>' +
+      '<div class="hstack" style="margin-top:var(--s3)">' +
+        '<button type="button" class="btn" data-action="ar:edit-one" data-id="' + esc(m.id) + '">' +
+          icon('pencil') + '修改这条材料</button>' +
+      '</div>';
+
+    U.modal({
+      title: '归档材料 · ' + m.name,
+      width: 860,
+      cancelText: null,
+      okText: '关闭',
+      body: body
+    });
+  }
+
+  /* ------------------------------------------------------- 新增 / 修改 */
+
+  /** 字段配置里指定的数据字典（没有就返回 null，按普通输入框渲染） */
+  function dictOf(f) {
+    if (!f || !f.dict || f.dict === '无') return null;
+    return S.dataDicts().filter(function (d) { return d.name + '字典' === f.dict; })[0] || null;
+  }
+
+  function fieldInput(f, value) {
+    var id = 'af-' + f.key;
+    var max = f.type === '日期' ? '' : ' maxlength="' + (f.totalLength || 200) + '"';
+    /* 字典类型：配置了数据字典就用下拉（与「归档设置」里的字典类型一致） */
+    var dict = dictOf(f);
+    if (dict) {
+      return '<select class="select" id="' + id + '">' +
+        '<option value="">未选择</option>' + dict.items.map(function (it) {
+          return '<option value="' + esc(it.value) + '"' +
+            (String(value) === String(it.value) ? ' selected' : '') + '>' + esc(it.name) + '</option>';
+        }).join('') + '</select>';
+    }
+    if (f.type === '日期') {
+      return '<input class="input" id="' + id + '" type="date" value="' + esc(value || '') + '">';
+    }
+    if (f.type === '数字') {
+      return '<input class="input" id="' + id + '" inputmode="numeric" value="' + esc(value || '') + '">';
+    }
+    if (f.key === 'note') {
+      return '<textarea class="textarea" id="' + id + '" rows="3"' + max +
+        ' placeholder="' + esc(f.hint || '') + '">' + esc(value || '') + '</textarea>';
+    }
+    return '<input class="input" id="' + id + '" type="text"' + max +
+      ' placeholder="' + esc(f.hint || '') + '" value="' + esc(value || '') + '">';
+  }
+
+  /** 表单：所属编研任务 + 「归档设置」的字段字典 + 附件 + （素材目录的）目录表预览 */
+  function formHtml(m) {
+    var isEdit = !!m;
+    var taskSelect = '<select class="select" id="af-task">' + S.tasks().map(function (t) {
+      return '<option value="' + esc(t.id) + '"' +
+        ((m ? m.taskId : state.taskId) === t.id ? ' selected' : '') + '>' +
+        esc(t.id + '　' + t.topicName) + '</option>';
+    }).join('') + '</select>' +
+      '<div class="form-field-extra">归档材料按编研任务组织：切换任务后，这条材料会出现在该任务的归档列表里。</div>';
+
+    var rows = ['<div class="form-row"><div class="form-label">所属编研任务' +
+      '<span class="req">*</span></div><div class="form-field">' + taskSelect + '</div></div>'];
+
+    S.archiveFields().forEach(function (f) {
+      var value = m ? m[f.key] : (f.defaultType && f.defaultType !== '无' ? f.defaultType : '');
+      var field;
+      if (f.key === 'stage') {
+        field = '<select class="select" id="af-stage">' + S.archiveStageChoices().map(function (c) {
+          return '<option value="' + c.value + '"' +
+            (Number(m ? m.stage : 0) === c.value ? ' selected' : '') + '>' + esc(c.label) + '</option>';
+        }).join('') + '</select>';
+      } else {
+        field = fieldInput(f, value);
+      }
+      /* 有 placeholder 的控件（文本/数字/字典）提示语只出现一次，别在下面再重复一行 */
+      var hasPlaceholder = f.type === '文本' && f.key !== 'note' && !dictOf(f);
+      rows.push('<div class="form-row"><div class="form-label">' + esc(f.name) +
+        (f.required ? '<span class="req">*</span>' : '') + '</div>' +
+        '<div class="form-field">' + field +
+        (f.hint && f.key !== 'note' && !hasPlaceholder
+          ? '<div class="form-field-extra">' + esc(f.hint) + '</div>' : '') +
+        '</div></div>');
+    });
+
+    var attachBlock = '<div class="attach-head">' +
+        '<button type="button" class="btn btn-sm" data-action="ar:pick-files">' +
+          icon('upload') + '选择文件</button>' +
+        '<span class="muted" style="font-size:var(--fs-xs)">可多选；原型不真正上传，只登记文件名、大小与格式</span>' +
+      '</div>' +
+      '<input type="file" id="af-files" class="sr-only" multiple data-change="ar:attach">' +
+      '<div id="af-attach-list">' + attachListHtml() + '</div>';
+    rows.push('<div class="form-row"><div class="form-label">附件</div>' +
+      '<div class="form-field">' + attachBlock +
+      '<div class="form-field-extra">发布审核通过后，' +
+      '「选题可行性评估表及附件」的附件清单默认取立选项题上登记的附件。</div>' +
+      '</div></div>');
+
+    var catalog = isEdit ? S.archiveCatalog(m) : [];
+    var catalogBlock = '<div class="data-note">' + icon('info') + '<span>' +
+      (catalog.length
+        ? '这条材料的目录表由该任务的选材库派生，共 <b>' + catalog.length + '</b> 条（在本条目的「查看」里能看到整张表）。'
+        : '材料名称含「素材目录」时，目录表由该任务的选材库派生；当前任务' +
+          (m ? '' : '（保存后') + '的选材库为空。') + '</span></div>';
+
+    return '<div class="form-table ar-form-table">' + rows.join('') + '</div>' +
+      '<h3 class="ar-sub">素材目录</h3>' + catalogBlock +
+      (isEdit ? '' : '<div class="data-note" style="margin-top:var(--s3)">' + icon('info') +
+        '<span>新增的材料会记入当前所选编研任务的归档列表；' +
+        '「材料名称」为必填，其余字段留空即可（列表里显示「未著录」）。</span></div>');
+  }
+
+  function attachListHtml() {
+    if (!state.formFiles.length) return '<div class="attach-empty">尚未添加附件</div>';
+    return '<div class="attach-list">' + state.formFiles.map(function (f, i) {
+      return '<div class="attach-item">' + icon('file-text') +
+        '<span class="attach-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
+        '<span class="attach-tag">' + esc(f.format || '—') + '</span>' +
+        '<span class="attach-size">' + esc(fmtSize(f.size)) + '</span>' +
+        '<button type="button" class="btn btn-sm btn-text" data-action="ar:remove-file" ' +
+          'data-i="' + i + '" title="移除该附件" aria-label="移除 ' + esc(f.name) + '">' +
+          icon('x') + '</button>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+
+  /** 从弹窗里读出表单数据（按字段字典逐个取值） */
+  function readForm(el) {
+    var data = { taskId: (el.querySelector('#af-task') || {}).value || '' };
+    S.archiveFields().forEach(function (f) {
+      var id = f.key === 'stage' ? 'af-stage' : ('af-' + f.key);
+      var node = el.querySelector('#' + id);
+      data[f.key] = node ? node.value : '';
+    });
+    data.stage = (el.querySelector('#af-stage') || {}).value || 0;
+    data.attachments = state.formFiles.slice();
+    return data;
+  }
+
+  function openForm(m) {
+    state.formFiles = m ? (m.attachments || []).map(function (a) {
+      return { name: a.name, size: a.size, format: a.format };
+    }) : [];
+    var isEdit = !!m;
+    U.modal({
+      title: (isEdit ? '修改归档材料 · ' : '新增归档材料 · ') + (m ? m.name : (currentTask() || {}).topicName || ''),
+      width: 820,
+      body: formHtml(m),
+      okText: isEdit ? '保存修改' : '确定新增',
+      cancelText: '取消',
+      onOk: function (el) {
+        var data = readForm(el);
+        var r = isEdit ? S.updateArchiveItem(m.id, data) : S.addArchiveItem(data);
+        U.toast(r.message, r.ok ? 'ok' : 'err');
+        return r.ok;
+      }
+    });
+  }
+
+  function doDelete() {
+    var keys = selectedKeys();
+    if (!keys.length) { U.toast('请先勾选要删除的归档材料', 'warn'); return; }
+    var names = keys.map(function (id) {
+      var m = S.archiveItemOf(id);
+      return m ? m.name : id;
+    });
+    U.confirm({
+      title: keys.length === 1 ? '删除归档材料？' : '删除选中的 ' + keys.length + ' 件归档材料？',
+      content: '<ul>' + names.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>' +
+        '<div class="muted" style="font-size:var(--fs-xs)">删除后不可恢复；被删除的自动归档条目在下次同步时可能被重新补上。</div>',
+      okText: '确认删除'
+    }).then(function (ok) {
+      if (!ok) return;
+      var r = S.deleteArchiveItems(keys);
+      state.selected = {};
+      U.toast(r.message, r.ok ? 'ok' : 'warn');
     });
   }
 
@@ -311,22 +547,45 @@
       syncSelection();
     });
 
-    /* ---- 新增 / 修改 / 删除（录入界面本次不生成） ---- */
-    U.register('ar:new', function () { U.toast(FORM_TODO, 'warn'); });
+    /* ---- 新增 / 修改 / 删除 ---- */
+    U.register('ar:new', function () { openForm(null); });
     U.register('ar:edit', function () {
       var keys = selectedKeys();
       if (keys.length !== 1) { U.toast('请先勾选一件材料再修改', 'warn'); return; }
-      var m = S.archiveItems().filter(function (x) { return x.id === keys[0]; })[0];
-      U.toast('修改「' + (m ? m.name : '') + '」：' + FORM_TODO, 'warn');
+      openForm(S.archiveItemOf(keys[0]));
     });
-    U.register('ar:delete', function () {
-      var keys = selectedKeys();
-      if (!keys.length) { U.toast('请先勾选要删除的材料', 'warn'); return; }
-      U.toast('已勾选 ' + keys.length + ' 件材料：' + FORM_TODO, 'warn');
+    U.register('ar:edit-one', function (ds) {
+      var m = S.archiveItemOf(ds.id);
+      if (!m) { U.toast('归档材料不存在', 'warn'); return; }
+      U.closeTop();                      /* 从「查看」弹窗里点进来的：先关掉查看弹窗 */
+      openForm(m);
     });
+    U.register('ar:delete', function () { doDelete(); });
     U.register('ar:view', function (ds) {
-      var m = S.archiveItems().filter(function (x) { return x.id === ds.id; })[0];
+      var m = S.archiveItemOf(ds.id);
       if (m) openDetail(m);
+    });
+
+    /* ---- 表单里的附件（原型只登记文件名与大小） ---- */
+    U.register('ar:pick-files', function () {
+      var input = document.getElementById('af-files');
+      if (input) input.click();
+    });
+    U.register('ar:attach', function (ds, el) {
+      var files = el.files ? Array.prototype.slice.call(el.files) : [];
+      files.forEach(function (f) {
+        var m = /\.([A-Za-z0-9]+)$/.exec(String(f.name || ''));
+        state.formFiles.push({ name: f.name, size: f.size, format: m ? m[1].toUpperCase() : '' });
+      });
+      var list = document.getElementById('af-attach-list');
+      if (list) list.innerHTML = attachListHtml();
+      el.value = '';                     /* 允许再次选择同一个文件 */
+      if (files.length) U.toast('已添加 ' + files.length + ' 个附件（仅记录名称、大小与格式）', 'ok');
+    });
+    U.register('ar:remove-file', function (ds) {
+      state.formFiles.splice(parseInt(ds.i, 10), 1);
+      var list = document.getElementById('af-attach-list');
+      if (list) list.innerHTML = attachListHtml();
     });
     U.register('ar:goto-task', function () {
       App.router.navigate(state.taskId ? ('#/task/' + state.taskId) : '#/task');

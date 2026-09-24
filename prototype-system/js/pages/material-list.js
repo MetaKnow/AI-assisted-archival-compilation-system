@@ -2,8 +2,17 @@
    页面：编研素材库 · 素材管理
 
    对应设计文档「编研素材库 / 素材管理」：
-     以列表的形式显示素材数据，列表字段包括「勾选框、序号、标题、档号、加入时间、创建人」。
+     以列表的形式显示素材数据，列表字段包括「勾选框、序号、标题、加入时间、创建人」。
      功能按钮：1. 删除；2. 筛选（按照素材标签筛选素材）；3. 更改标签。
+     **评审调整**：列表去掉「档号」列、改为「备注」列；「新增素材」同样去掉档号、增加备注。
+     档号在数据里仍然保留（从「查找素材」加入素材库的素材带档号，用来回查档案目录），
+     只是不再作为素材管理的字段展示；手工新增的素材没有档号，判重按**标题**。
+
+   评审追加的三项：
+     · 每条数据加「查看」：只读查看该素材的目录与文件（实现在 material-view.js，与查找素材共用）
+     · 工具栏加「新增素材」：手工录入标题 / 档号 / 素材标签，并可选择一个本机文件上传
+     · 工具栏加「按任务筛选」：下拉列出全部编研任务。**过滤逻辑留到「确定选材」环节** ——
+       素材现在没有"属于哪个任务"这个字段，要等选材库把素材挂到大纲节点上才有依据
 
    原型的两个处理：
      1. 列表多一列「标签」—— 否则用户看不出筛选依据，也无法确认「更改标签」的结果；
@@ -23,9 +32,16 @@
   var state = {
     keyword: '',
     tagId: '',
+    /* 按档案门类筛选（真实过滤：门类取自素材自身字段） */
+    category: '',
+    /* 按任务筛选：**只记录所选任务**，真正的过滤逻辑在「确定选材」环节落地
+       （素材目前没有"属于哪个编研任务"这个字段，要等选材库把素材挂到大纲节点上） */
+    taskId: '',
     selected: {},
     /* 批量更改标签的方式：append（默认，安全） | replace */
-    tagMode: 'append'
+    tagMode: 'append',
+    /* 「新增素材」表单里选中的本机文件（只记文件名与大小） */
+    formFile: null
   };
 
   /* ------------------------------------------------------------ 工具 */
@@ -38,8 +54,9 @@
   function visibleMaterials() {
     var kw = state.keyword.trim().toLowerCase();
     return S.materials().filter(function (m) {
+      if (state.category && (m.category || '') !== state.category) return false;
       if (state.tagId && (m.tagIds || []).indexOf(state.tagId) < 0) return false;
-      if (kw && (m.title + ' ' + m.archiveNo).toLowerCase().indexOf(kw) < 0) return false;
+      if (kw && (m.title + ' ' + (m.note || '')).toLowerCase().indexOf(kw) < 0) return false;
       return true;
     });
   }
@@ -75,25 +92,77 @@
     var shown = visibleMaterials().length;
 
     var tagOptions = ['<option value="">全部标签</option>'].concat(
-      S.tags().map(function (t) {
+      S.tagsWithUsage().map(function (t) {
         return '<option value="' + esc(t.id) + '"' + (state.tagId === t.id ? ' selected' : '') + '>' +
           esc(t.name) + '（' + t.materialCount + '）</option>';
       })
     ).join('');
 
+    /* 门类下拉：只列素材库里实际出现的门类（带件数），不列空门类 */
+    var catCount = {};
+    S.materials().forEach(function (m) {
+      var c = m.category || '';
+      if (c) catCount[c] = (catCount[c] || 0) + 1;
+    });
+    var catOptions = ['<option value="">全部门类</option>'].concat(
+      (App.mock.ARCHIVE_CATEGORIES || []).filter(function (c) { return catCount[c]; })
+        .map(function (c) {
+          return '<option value="' + esc(c) + '"' + (state.category === c ? ' selected' : '') + '>' +
+            esc(c) + '（' + catCount[c] + '）</option>';
+        })
+    ).join('');
+
+    /* 任务下拉：列出全部编研任务（已完成的排后面，便于在建任务优先选） */
+    var tasks = S.tasks().slice().sort(function (a, b) {
+      var ad = a.status === 'DONE' ? 1 : 0, bd = b.status === 'DONE' ? 1 : 0;
+      if (ad !== bd) return ad - bd;
+      return a.id < b.id ? 1 : -1;
+    });
+    var taskOptions = ['<option value="">全部任务</option>'].concat(
+      tasks.map(function (t) {
+        return '<option value="' + esc(t.id) + '"' + (state.taskId === t.id ? ' selected' : '') + '>' +
+          esc(t.id + ' · ' + t.topicName) + '</option>';
+      })
+    ).join('');
+
     return '<div class="toolbar">' +
+      '<button type="button" class="btn btn-primary" data-action="mat:new">' +
+        icon('plus') + '新增素材</button>' +
       '<span class="toolbar-note">共 ' + total + ' 件素材' +
         (shown === total ? '' : '，当前筛选出 ' + shown + ' 件') + '</span>' +
       '<span class="spacer"></span>' +
+      '<label class="sr-only" for="mat-task">按编研任务筛选</label>' +
+      '<select class="select select-inline select-task" id="mat-task" data-change="mat:task-filter" ' +
+        'title="按编研任务筛选素材">' + taskOptions + '</select>' +
+      '<label class="sr-only" for="mat-cat">按档案门类筛选</label>' +
+      '<select class="select select-inline" id="mat-cat" data-change="mat:cat-filter" ' +
+        'title="按档案门类筛选素材">' + catOptions + '</select>' +
       '<label class="sr-only" for="mat-tag">按素材标签筛选</label>' +
       '<select class="select select-inline" id="mat-tag" data-change="mat:filter">' + tagOptions + '</select>' +
-      '<label class="sr-only" for="mat-kw">按标题或档号搜索</label>' +
-      '<input class="input input-inline" id="mat-kw" type="search" placeholder="搜索标题或档号" ' +
+      '<label class="sr-only" for="mat-kw">按标题或备注搜索</label>' +
+      '<input class="input input-inline" id="mat-kw" type="search" placeholder="搜索标题或备注" ' +
         'value="' + esc(state.keyword) + '" data-enter="mat:search">' +
       '<button type="button" class="btn" data-action="mat:search">' + icon('search') + '搜索</button>' +
-      ((state.keyword || state.tagId) ?
+      ((state.keyword || state.tagId || state.taskId || state.category) ?
         '<button type="button" class="btn btn-text" data-action="mat:clear-filter">重置</button>' : '') +
     '</div>';
+  }
+
+  /**
+   * 按任务筛选的说明条。
+   * 素材目前**没有**"属于哪个编研任务"这个字段 —— 它是在「确定选材」环节
+   * 把素材挂到大纲节点上时才产生的。所以这里只记录所选任务、不动列表，
+   * 并在界面上说清楚，避免让人以为"选了任务却没过滤 = 坏了"。
+   */
+  function renderTaskNote() {
+    if (!state.taskId) return '';
+    var t = S.getTask(state.taskId);
+    if (!t) return '';
+    return '<div class="data-note">' + icon('info') +
+      '<span>已选择任务 <b>' + esc(t.id) + ' · ' + esc(t.topicName) + '</b>' +
+      '（' + esc(S.taskState(t).label) + '）——' +
+      '「按任务筛选」的过滤逻辑将在<b>「确定选材」</b>环节实现：' +
+      '素材要先挂到该任务的大纲节点上，才谈得上"属于哪个任务"。当前列表未按任务过滤。</span></div>';
   }
 
   /** 批量条内容（不含外层容器），勾选时就地更新 */
@@ -115,9 +184,10 @@
     return '<div id="mat-batch">' + batchBarHtml() + '</div>';
   }
 
-  function actionBtn(action, id, label, iconName, title) {
+  function actionBtn(action, id, label, iconName, title, from) {
     return '<button type="button" class="btn btn-sm btn-text" data-action="' + action + '" ' +
-      'data-id="' + esc(id) + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' +
+      'data-id="' + esc(id) + '"' + (from ? ' data-from="' + esc(from) + '"' : '') +
+      (title ? ' title="' + esc(title) + '"' : '') + '>' +
       (iconName ? icon(iconName) : '') + esc(label) + '</button>';
   }
 
@@ -130,27 +200,33 @@
           'data-id="' + esc(m.id) + '"' + (state.selected[m.id] ? ' checked' : '') +
           ' aria-label="选择 ' + esc(m.title) + '"></td>' +
         '<td class="col-idx tnum">' + (i + 1) + '</td>' +
-        '<td>' + esc(m.title) + '</td>' +
-        '<td class="col-no tnum">' + esc(m.archiveNo) + '</td>' +
+        '<td class="col-title"><span class="title-cell" title="' + esc(m.title) + '">' +
+          esc(m.title) + '</span></td>' +
+        '<td class="col-cat">' + esc(m.category || '未著录') + '</td>' +
         '<td class="col-tags">' + tagChips(m) + '</td>' +
+        '<td class="col-note">' + (m.note
+          ? '<span class="note-cell" title="' + esc(m.note) + '">' + esc(m.note) + '</span>'
+          : '<span class="muted">未填写</span>') + '</td>' +
         '<td class="col-time tnum">' + esc(App.util.fmtDateTime(m.addedAt)) + '</td>' +
         '<td class="col-user">' + esc(m.addedBy) + '</td>' +
         '<td class="col-actions"><div class="row-actions">' +
+          actionBtn('material:view', m.id, '查看', 'eye', '查看该素材的目录与文件', 'library') +
           actionBtn('mat:retag', m.id, '更改标签', 'tag') +
           actionBtn('mat:delete', m.id, '删除', null, '从素材库删除该素材') +
         '</div></td>' +
       '</tr>';
     }).join('');
 
-    return '<div class="table-scroll"><table class="table">' +
+    return '<div class="table-scroll"><table class="table mat-table">' +
       '<thead><tr>' +
         '<th class="col-check"><input type="checkbox" id="mat-check-all" ' +
           'data-change="mat:select-all"' + (allChecked ? ' checked' : '') +
           ' aria-label="全选当前列表"></th>' +
         '<th class="col-idx">序号</th>' +
-        '<th>标题</th>' +
-        '<th class="col-no">档号</th>' +
+        '<th class="col-title">标题</th>' +
+        '<th class="col-cat">档案门类</th>' +
         '<th class="col-tags">标签</th>' +
+        '<th class="col-note">备注</th>' +
         '<th class="col-time">加入时间</th>' +
         '<th class="col-user">创建人</th>' +
         '<th class="col-actions">操作</th>' +
@@ -163,18 +239,19 @@
     var rows = visibleMaterials();
     purgeSelection();
 
-    var emptyAction = (state.keyword || state.tagId)
+    var emptyAction = (state.keyword || state.tagId || state.category)
       ? '<button class="btn" data-action="mat:clear-filter">' + icon('rotate-ccw') + '清除筛选</button>'
       : '<button class="btn btn-primary" data-action="mat:goto-search">' +
         icon('search') + '去查找素材</button>';
 
     return '' +
       renderToolbar() +
+      renderTaskNote() +
       renderBatchBar() +
       '<section class="card">' +
         (rows.length ? renderTable(rows) :
           '<div class="card-body">' + U.empty(
-            (state.keyword || state.tagId) ? '没有符合条件的素材' : '素材库还是空的',
+            (state.keyword || state.tagId || state.category) ? '没有符合条件的素材' : '素材库还是空的',
             'layers', emptyAction) + '</div>') +
       '</section>';
   }
@@ -194,7 +271,7 @@
     var single = ids.length === 1;
     var one = single ? S.getMaterial(ids[0]) : null;
     var current = one ? (one.tagIds || []) : [];
-    var tags = S.tags();
+    var tags = S.tagsWithUsage();
 
     if (!tags.length) {
       U.modal({
@@ -323,7 +400,140 @@
     if (bar) bar.innerHTML = batchBarHtml();
   }
 
+  /* ------------------------------------------------------- 新增素材 */
+
+  function fmtSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function formFileHtml() {
+    if (!state.formFile) {
+      return '<div class="attach-empty">尚未选择文件（原型只记录文件名与大小，不保存文件内容）</div>';
+    }
+    return '<div class="attach-list"><div class="attach-item">' + icon('file-text') +
+      '<span class="attach-name" title="' + esc(state.formFile.name) + '">' +
+        esc(state.formFile.name) + '</span>' +
+      '<span class="attach-size">' + esc(fmtSize(state.formFile.size)) + '</span>' +
+      '<button type="button" class="btn btn-sm btn-text" data-action="mat:remove-file" ' +
+        'title="移除该文件" aria-label="移除 ' + esc(state.formFile.name) + '">' + icon('x') + '</button>' +
+    '</div></div>';
+  }
+
+  function openNewForm() {
+    state.formFile = null;
+    var tags = S.tagsWithUsage();
+    var tagList = tags.length
+      ? '<div class="pick-list">' + tags.map(function (t) {
+          return '<label class="pick-item">' +
+            '<input type="checkbox" name="new-tag" value="' + esc(t.id) + '">' +
+            '<span class="pick-main">' +
+              '<span class="pick-name">' + esc(t.name) + '</span>' +
+              (t.note ? '<span class="pick-note">' + esc(t.note) + '</span>' : '') +
+            '</span>' +
+            '<span class="pick-count">已用 ' + t.materialCount + ' 件</span>' +
+          '</label>';
+        }).join('') + '</div>'
+      : '<div class="field-extra">还没有素材标签，请先到「编研素材库 / 标签管理」新增标签。</div>';
+
+    U.modal({
+      title: '新增素材',
+      width: 680,
+      okText: '保存',
+      cancelText: '取消',
+      body:
+        '<div class="field">' +
+          '<label class="field-label" for="mat-f-title">标题<span class="req">*</span></label>' +
+          '<input class="input" id="mat-f-title" maxlength="80" placeholder="素材标题（一般与档案题名一致）">' +
+        '</div>' +
+        '<div class="field">' +
+          '<label class="field-label" for="mat-f-cat">档案门类</label>' +
+          '<select class="select" id="mat-f-cat">' +
+            (App.mock.ARCHIVE_CATEGORIES || []).map(function (c, i) {
+              return '<option value="' + esc(c) + '"' + (i === 0 ? ' selected' : '') + '>' +
+                esc(c) + '</option>';
+            }).join('') +
+          '</select>' +
+          '<div class="field-extra">从「查找素材」加入的素材会自动沿用档案目录里的门类。</div>' +
+        '</div>' +
+        '<div class="field">' +
+          '<label class="field-label" for="mat-f-note">备注</label>' +
+          '<textarea class="textarea" id="mat-f-note" rows="2" maxlength="200" ' +
+            'placeholder="说明这条素材的内容、用途或选材理由">' + '</textarea>' +
+        '</div>' +
+        '<div class="field">' +
+          '<div class="field-label">素材标签<span class="req">*</span></div>' +
+          tagList +
+          '<div class="field-extra">至少选择一个标签，素材管理里就是按标签筛选的。</div>' +
+        '</div>' +
+        '<div class="field">' +
+          '<div class="field-label">上传文件</div>' +
+          '<div class="attach-head">' +
+            '<button type="button" class="btn btn-sm" data-action="mat:pick-file">' +
+              icon('upload') + '选择文件</button>' +
+            '<span class="field-extra" style="margin:0">支持 PDF / OFD / 图片等，单个文件</span>' +
+          '</div>' +
+          '<input type="file" id="mat-file" class="sr-only" data-change="mat:new-file">' +
+          '<div id="mat-file-list">' + formFileHtml() + '</div>' +
+        '</div>',
+      onOk: function (el) {
+        var title = el.querySelector('#mat-f-title').value.trim();
+        var tagIds = Array.prototype.slice
+          .call(el.querySelectorAll('input[name="new-tag"]:checked'))
+          .map(function (c) { return c.value; });
+        if (!title) { U.toast('请填写标题', 'warn'); return false; }
+        if (!tagIds.length) { U.toast('请至少选择一个素材标签', 'warn'); return false; }
+        var res = S.addMaterial({
+          title: title, tagIds: tagIds, file: state.formFile,
+          category: el.querySelector('#mat-f-cat').value,
+          note: el.querySelector('#mat-f-note').value.trim()
+        });
+        if (!res.ok) { U.toast(res.message, 'warn'); return false; }   // 标题重复：留在弹窗里改
+        state.formFile = null;
+        U.toast(res.message, 'ok');
+        return true;
+      }
+    });
+  }
+
   function register() {
+    /* 「查看」的动作由两个页面共用，注册一次即可（见 material-view.js） */
+    if (App.materialView && App.materialView.register) App.materialView.register();
+
+    U.register('mat:new', function () { openNewForm(); });
+
+    U.register('mat:pick-file', function () {
+      var input = document.getElementById('mat-file');
+      if (input) input.click();
+    });
+
+    U.register('mat:new-file', function (ds, el) {
+      var f = el.files && el.files[0];
+      if (f) state.formFile = { name: f.name, size: f.size };
+      el.value = '';   // 允许再次选择同一个文件
+      var list = document.getElementById('mat-file-list');
+      if (list) list.innerHTML = formFileHtml();
+      if (f) U.toast('已选择文件「' + f.name + '」（只记录文件名与大小）', 'ok');
+    });
+
+    U.register('mat:remove-file', function () {
+      state.formFile = null;
+      var list = document.getElementById('mat-file-list');
+      if (list) list.innerHTML = formFileHtml();
+    });
+
+    U.register('mat:task-filter', function (ds, el) {
+      state.taskId = el.value;
+      App.app.render();
+    });
+
+    U.register('mat:cat-filter', function (ds, el) {
+      state.category = el.value;
+      App.app.render();
+    });
+
     U.register('mat:select', function (ds, el) {
       if (el.checked) state.selected[ds.id] = true;
       else delete state.selected[ds.id];
@@ -354,6 +564,8 @@
     U.register('mat:clear-filter', function () {
       state.keyword = '';
       state.tagId = '';
+      state.taskId = '';
+      state.category = '';
       state.selected = {};
       App.app.render();
     });

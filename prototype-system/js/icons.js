@@ -67,6 +67,14 @@
     'chevron-down': '<path d="m6 9 6 6 6-6"/>',
     'chevron-right': '<path d="m9 6 6 6-6 6"/>',
     'chevron-up': '<path d="m18 15-6-6-6 6"/>',
+    'chevron-left': '<path d="m15 18-6-6 6-6"/>',
+    /* 审核校定用到的图标 */
+    wand: '<path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="m17.8 11.8 1.4 1.4"/><path d="m15 7 1.4-1.4"/><path d="m12.2 6.2-1.4-1.4"/><path d="m6.6 12.6 8.8 8.8"/><path d="m3 21 3-3"/><path d="m3 21 3-3 4.6-4.6"/><path d="M13.4 4.6 12 6"/>',
+    'shield-check': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+    'spell-check': '<path d="m6 16 6-12 6 12"/><path d="M8 12h8"/><path d="m16 20 2 2 4-4"/>',
+    scale: '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>',
+    'user-shield': '<path d="M19 11V6a1 1 0 0 0-1-1c-2 0-4.5-1.2-6.24-2.72a1.17 1.17 0 0 0-1.52 0C8.51 3.81 6 5 4 5a1 1 0 0 0-1 1v5c0 5 3.5 7.5 7.66 8.95a1 1 0 0 0 .67-.01C15.5 18.5 19 16 19 11Z"/><path d="M9 12h.01"/><path d="M15 12h.01"/>',
+    'scan-text': '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8h8"/><path d="M7 12h10"/><path d="M7 16h6"/>',
     'more-vertical': '<circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/>',
     'panel-left': '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
     'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>' +

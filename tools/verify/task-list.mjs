@@ -38,6 +38,17 @@ const SNAP = `
     rowCount: rowKeys.length,
     rowSizes: rowKeys.map(function (k) { return rows[k].length; }),
     chips: document.querySelectorAll('#main .task-card .stage-chip').length,
+    /* 五个环节是否在同一行、有没有被压到裁剪文字 */
+    chipRows: (function () {
+      var cards = Array.prototype.slice.call(document.querySelectorAll('#main .task-card'));
+      return cards.map(function (c) {
+        var chips = Array.prototype.slice.call(c.querySelectorAll('.stage-chip'));
+        var tops = {};
+        chips.forEach(function (x) { tops[Math.round(x.getBoundingClientRect().top)] = 1; });
+        return { rows: Object.keys(tops).length, n: chips.length,
+          clipped: chips.filter(function (x) { return x.scrollWidth > x.clientWidth + 1; }).length };
+      });
+    })(),
     clipped: Array.prototype.filter.call(
       document.querySelectorAll('#main .task-card .task-meta dd'),
       function (d) { return d.scrollWidth > d.clientWidth + 1; })
@@ -135,7 +146,14 @@ try {
   check('卡片高度一致（同一行等高拉伸）',
     Math.abs(snap.cardBoxes[0].h - snap.cardBoxes[2].h) <= 1,
     snap.cardBoxes[0].h.toFixed(1) + 'px');
-  check('12 张卡片 = 12 × 6 = 72 个阶段切片', snap.chips === 72, snap.chips + ' 个切片');
+  check('每张卡片的 5 个环节**排在同一行**（不换行），且没有被压到裁剪文字',
+    snap.chipRows.length === snap.cardCount &&
+    snap.chipRows.every(function (r) { return r.n === 5 && r.rows === 1 && r.clipped === 0; }),
+    snap.chipRows.slice(0, 3).map(function (r) {
+      return r.n + ' 个 / ' + r.rows + ' 行 / 裁剪 ' + r.clipped; }).join('；'));
+  check('12 张卡片 × 每张 5 个环节切片 = 60（环节从 6 个减为 5 个）',
+    snap.chips === snap.cardCount * 5,
+    snap.chips + ' 个切片 = ' + snap.cardCount + ' 张 × 5 个环节');
   check('卡片变窄后元数据没有出现省略号（任务日期完整可读）',
     snap.clipped.length === 0,
     snap.clipped.length ? 'ERR 被截断：' + snap.clipped.join('、') : '12 张卡片 × 3 项元数据都完整');

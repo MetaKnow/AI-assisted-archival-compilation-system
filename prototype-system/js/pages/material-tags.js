@@ -24,8 +24,9 @@
 
   function visibleTags() {
     var kw = state.keyword.trim().toLowerCase();
-    if (!kw) return S.tags();
-    return S.tags().filter(function (t) {
+    /* 带派生用量：表格「用量」列与"已关联 N 件"的提示都读 materialCount */
+    if (!kw) return S.tagsWithUsage();
+    return S.tagsWithUsage().filter(function (t) {
       return t.name.toLowerCase().indexOf(kw) >= 0 ||
         (t.note || '').toLowerCase().indexOf(kw) >= 0;
     });
@@ -63,7 +64,7 @@
   }
 
   function usageCell(t) {
-    var n = Number(t.materialCount) || 0;
+    var n = S.tagUsage(t.id);
     if (!n) return '<span class="muted">未使用</span>';
     return '<span class="tnum"><b>' + n + '</b> 件</span>';
   }

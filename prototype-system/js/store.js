@@ -17,7 +17,14 @@
 
   var App = (global.App = global.App || {});
 
-  var STORAGE_KEY = 'archive-proto-system:session';
+  /* 所有演示数据的键前缀：新增数据集必须用它命名，种子版本变化时才会被一起清掉 */
+  var PREFIX = 'archive-proto-system:';
+  var STORAGE_KEY = PREFIX + 'session';
+  /* 任务进展（阶段 / 状态 / 暂停 / 阶段史）：**单独一个键，且不随种子版本清除**。
+     种子数据是"演示素材"，但"我把任务推到第几阶段"是用户的操作结果 ——
+     评审反馈"刷新后阶段又回去了"，就是因为种子版本一变、连进展一起被清掉了。 */
+  var PROGRESS_KEY = PREFIX + 'taskProgress';
+  var KEEP_ON_RESEED = [STORAGE_KEY, PROGRESS_KEY];
   var TOPICS_KEY = 'archive-proto-system:topics';
   var TAGS_KEY = 'archive-proto-system:tags';
   var MATERIALS_KEY = 'archive-proto-system:materials';
@@ -28,6 +35,8 @@
   var FLOW_KEY = 'archive-proto-system:flow';
   var DICT_KEY = 'archive-proto-system:dict';
   var OUTLINE_KEY = 'archive-proto-system:outline';
+  var SELECTION_KEY = 'archive-proto-system:selections';
+  var COMPOSE_KEY = 'archive-proto-system:compose';
   var SEED_KEY = 'archive-proto-system:seed';
 
   var state = {
@@ -47,7 +56,15 @@
     archiveFields: null,
     flowSteps: null,
     dataDicts: null,
-    outlines: null
+    outlines: null,
+    selections: null,
+    composes: null,
+    auditRules: null,
+    auditResults: null,
+    taskProgress: null,
+    messages: null,
+    publish: null,
+    reseeded: false
   };
 
   var listeners = [];
@@ -96,8 +113,20 @@
     try {
       var v = global.localStorage.getItem(SEED_KEY);
       if (v === App.mock.SEED_VERSION) return true;
-      [TOPICS_KEY, TAGS_KEY, MATERIALS_KEY, TASKS_KEY, PRODUCTS_KEY,
-        ARCHIVE_KEY, USERS_KEY, FLOW_KEY, DICT_KEY].forEach(removeKey);
+      /* ⚠ 这里**按前缀清**，不再逐个列键名。
+         早先是写死的一份白名单（topics/tags/materials/tasks/products/archive/users/flow/dict）——
+         后来陆续加了 outline、selections、compose、auditRules、auditResults，
+         白名单没跟着补：版本号一变，**新数据集的旧数据照样活着、新种子进不来**，
+         表现成"改了种子但界面没变"（审核校定就因此扫不到播入的问题章节）。
+         现在只要新数据集按 PREFIX 命名，就自动会被清掉，不会再有下一次漏加。
+         会话（登录态）保留：换种子不代表要把人踢下线。 */
+      var kill = [];
+      for (var i = 0; i < global.localStorage.length; i++) {
+        var k = global.localStorage.key(i);
+        if (k && k.indexOf(PREFIX) === 0 && KEEP_ON_RESEED.indexOf(k) < 0) kill.push(k);
+      }
+      kill.forEach(removeKey);
+      state.reseeded = true;          /* 供启动时提示一句"演示数据已更新、任务进展已保留" */
       global.localStorage.setItem(SEED_KEY, App.mock.SEED_VERSION);
       return false;
     } catch (e) {
@@ -346,6 +375,27 @@
     return state.tags;
   }
 
+  /**
+   * 标签 + **派生的**关联素材数（页面展示用）
+   *
+   * 为什么单独一个入口：`tags()` 返回的是内部数组本身（`addTag` 要 unshift 它、
+   * `deleteTags` 要按它重建），不能改成返回副本；而 `materialCount` 是算出来的、
+   * 不该被写进 localStorage 冒充数据。
+   *
+   * ⚠️ 曾经踩过的坑：页面统一写 `t.materialCount`，但 store 从来没提供过这个字段 ——
+   * 于是标签管理的「用量」列全显示"未使用"、标签筛选下拉显示"（undefined）"、
+   * 更改标签与新增素材弹窗显示"已用 undefined 件"，**没有任何报错**。
+   * 现在页面一律走 `tagsWithUsage()`，并且验证脚本里有"全站不出现 undefined / NaN"的兜底断言。
+   */
+  function tagsWithUsage() {
+    return tags().map(function (t) {
+      var copy = {};
+      Object.keys(t).forEach(function (k) { copy[k] = t[k]; });
+      copy.materialCount = tagUsage(t.id);
+      return copy;
+    });
+  }
+
   function getTag(id) {
     return tags().filter(function (t) { return t.id === id; })[0] || null;
   }
@@ -460,6 +510,78 @@
    * 把检索结果加入素材库（按档号判重）
    * @returns {{added:Array, skipped:Array}} 两个都是数组（页面按长度与下标使用）
    */
+  /** 按档号回查档案目录（目录是 mock 里的静态数据，不落 localStorage） */
+  function catalogByArchiveNo(no) {
+    return (App.mock.ARCHIVE_CATALOG || []).filter(function (a) { return a.archiveNo === no; })[0] || null;
+  }
+
+  /** 标题是否已在素材库（手工新增没有档号，判重只能按标题） */
+  function hasMaterialTitle(title) {
+    var t = String(title || '').trim().toLowerCase();
+    if (!t) return false;
+    return materials().some(function (m) {
+      return String(m.title || '').trim().toLowerCase() === t;
+    });
+  }
+
+  /** 档号前缀 → 全宗：从档案目录里现推，不写死映射表 */
+  function fondsOfArchiveNo(no) {
+    var prefix = String(no || '').split('-')[0];
+    var hit = (App.mock.ARCHIVE_CATALOG || []).filter(function (a) {
+      return String(a.archiveNo).split('-')[0] === prefix;
+    })[0];
+    if (hit) return hit.fonds;
+    return prefix ? prefix + ' 全宗（未编）' : '';
+  }
+
+  /** 档号里的 4 位年份 */
+  function yearOfArchiveNo(no) {
+    var m = String(no || '').match(/(19|20)\d{2}/);
+    return m ? m[0] : '';
+  }
+
+  /**
+   * 手工新增一件素材（素材管理 →「新增素材」）
+   * 档号唯一（与「查找素材」加入素材库用的是同一个判重口径）；
+   * 能在档案目录里匹配到档号时，自动带出全宗 / 年度 / 题名。
+   * @returns {{ok:boolean, item?:Object, catalog?:Object, message:string}}
+   */
+  function addMaterial(data) {
+    data = data || {};
+    var title = String(data.title || '').trim();
+    /* 界面上去掉了档号字段：手工新增的素材没有档号，只有从「查找素材」加入的才有 */
+    var no = String(data.archiveNo || '').trim();
+    if (!title) return { ok: false, message: '请填写标题' };
+    if (hasMaterialTitle(title)) {
+      return { ok: false, message: '素材「' + title + '」已在素材库中，不能重复新增' };
+    }
+
+    var cat = no ? catalogByArchiveNo(no) : null;
+    var m = {
+      id: nextMaterialId(),
+      archiveId: cat ? cat.id : null,
+      archiveNo: no,
+      title: title,
+      fonds: (cat && cat.fonds) || (no ? fondsOfArchiveNo(no) : ''),
+      year: (cat && cat.year) || (no ? yearOfArchiveNo(no) : ''),
+      note: String(data.note || '').trim(),
+      category: (App.mock.ARCHIVE_CATEGORIES || []).indexOf(data.category) >= 0
+        ? data.category : '文书档案',
+      tagIds: (data.tagIds || []).slice(),
+      /* 附件只记文件名与大小（原型不保存文件内容） */
+      file: data.file ? { name: String(data.file.name || ''), size: Number(data.file.size) || 0 } : null,
+      addedAt: new Date().toISOString(),
+      addedBy: (state.user && state.user.name) || '未知'
+    };
+    materials().unshift(m);
+    saveMaterials();
+    notify();
+    return {
+      ok: true, item: m, catalog: cat,
+      message: '已新增素材「' + m.title + '」' + (cat ? '（已与档案目录 ' + no + ' 关联）' : '')
+    };
+  }
+
   function addMaterials(archives, tagIds) {
     var added = [], skipped = [];
     (archives || []).forEach(function (a) {
@@ -471,6 +593,9 @@
         title: a.title,
         fonds: a.fonds || '',
         year: a.year || '',
+        /* 备注默认取档案摘要：说明这条素材是什么 */
+        note: a.summary || '',
+        category: a.category || '',
         tagIds: (tagIds || []).slice(),
         addedAt: new Date().toISOString(),
         addedBy: (state.user && state.user.name) || '未知'
@@ -522,19 +647,63 @@
   function readTasks() {
     var d = readJSON(TASKS_KEY);
     if (!d) return false;
-    state.tasks = d;
+    state.tasks = applyProgress(d);
     return true;
   }
 
   function saveTasks() { writeJSON(TASKS_KEY, state.tasks); }
 
+  /* ---- 任务进展覆盖层：把"用户推进到哪"记在单独一个键里，种子更新也不丢 ---- */
+
+  function readTaskProgress() {
+    var d = readJSON(PROGRESS_KEY);
+    state.taskProgress = (d && typeof d === 'object') ? d : {};
+    return state.taskProgress;
+  }
+
+  function saveTaskProgress() { writeJSON(PROGRESS_KEY, state.taskProgress || {}); }
+
+  /** 把任务当前的进展记进覆盖层（阶段 / 状态 / 暂停 / 阶段史 / 起止时间） */
+  function rememberProgress(t) {
+    if (!t) return;
+    state.taskProgress = state.taskProgress || {};
+    state.taskProgress[t.id] = {
+      stage: t.stage, status: t.status, paused: !!t.paused,
+      stageHistory: clone(t.stageHistory || []),
+      startedAt: t.startedAt || null, finishedAt: t.finishedAt || null
+    };
+    saveTaskProgress();
+  }
+
+  /** 读取任务列表时套用覆盖层：种子变了也保留用户推到哪一阶段 */
+  function applyProgress(list) {
+    var prog = state.taskProgress || {};
+    (list || []).forEach(function (t) {
+      var p = prog[t.id];
+      if (!p) return;
+      if (p.stage != null) t.stage = p.stage;
+      if (p.status) t.status = p.status;
+      if (p.paused != null) t.paused = !!p.paused;
+      if (p.stageHistory) t.stageHistory = clone(p.stageHistory);
+      if (p.startedAt) t.startedAt = p.startedAt;
+      if (p.finishedAt) t.finishedAt = p.finishedAt;
+    });
+    return list;
+  }
+
   function resetTasks() {
-    state.tasks = clone(App.mock.TASKS);
+    state.tasks = applyProgress(clone(App.mock.TASKS));
     saveTasks();
   }
 
+  /** 「重置演示数据」时连任务进展一起清空（按钮的语义就是全部回到种子状态） */
+  function clearTaskProgress() {
+    state.taskProgress = {};
+    saveTaskProgress();
+  }
+
   function tasks() {
-    if (!state.tasks) state.tasks = clone(App.mock.TASKS);
+    if (!state.tasks) state.tasks = applyProgress(clone(App.mock.TASKS));
     return state.tasks;
   }
 
@@ -628,7 +797,14 @@
       deleted.push(t.id);
       state.tasks = tasks().filter(function (x) { return x.id !== id; });
     });
-    if (deleted.length) { saveTasks(); notify(); }
+    if (deleted.length) {
+      deleted.forEach(function (t) {
+        if (state.taskProgress) delete state.taskProgress[t.id];
+      });
+      saveTaskProgress();
+      saveTasks();
+      notify();
+    }
     return { deleted: deleted };
   }
 
@@ -650,6 +826,7 @@
     t.paused = false;
     t.startedAt = new Date().toISOString();
     pushStageHistory(t, t.stage, 'START');
+    rememberProgress(t);
     saveTasks();
     syncTopicStatus(t);
     notify();
@@ -663,6 +840,7 @@
     if (t.paused) return { ok: false, message: '任务已处于暂停状态' };
     t.paused = true;
     pushStageHistory(t, t.stage, 'PAUSE');
+    rememberProgress(t);
     saveTasks();
     notify();
     return { ok: true, message: '已暂停任务 ' + t.id };
@@ -674,12 +852,46 @@
     if (!t.paused) return { ok: false, message: '任务未处于暂停状态' };
     t.paused = false;
     pushStageHistory(t, t.stage, 'RESUME');
+    rememberProgress(t);
     saveTasks();
     notify();
     return { ok: true, message: '已继续任务 ' + t.id };
   }
 
+  /**
+   * 把任务的进展**停在**某个阶段（评审要求：点进度条上的某个环节就停在这里）。
+   *
+   * 规则：
+   *   · 后面的环节一律回到「未开始」—— 阶段史截断到该阶段，之后再按顺序推进
+   *   · 已经完成的任务往回点，状态回到「进行中」（否则会出现"第 2 阶段 + 已完成"这种矛盾）
+   *   · 只能点"当前阶段及以前"和"下一个阶段"，**不能跳过下一环**（校验在页面侧，store 只夹范围）
+   */
+  function setTaskStage(id, stage) {
+    var _lock = lockedGuard(id);
+    if (_lock) return _lock;
+    var t = getTask(id);
+    if (!t) return { ok: false, message: '任务不存在' };
+    var max = taskStages().length;
+    var n = Math.max(1, Math.min(Number(stage) || 1, max));
+    t.stage = n;
+    t.status = 'IN_PROGRESS';
+    t.startedAt = t.startedAt || new Date().toISOString();
+    /* 阶段史：只留 n 之前的记录 + 本阶段这一条（后面的环节就当没来过） */
+    var hist = (t.stageHistory || []).filter(function (h) { return h.stage < n; });
+    hist.push({ stage: n, at: new Date().toISOString(),
+      by: (state.user && state.user.name) || '未知' });
+    t.stageHistory = hist;
+    rememberProgress(t);
+    saveTasks();
+    syncTopicStatus(t);
+    notify();
+    var def = stageDef(n) || { title: '' };
+    return { ok: true, message: '进展已停在第 ' + n + ' 阶段「' + def.title + '」，后面的环节回到未开始' };
+  }
+
   function advanceStage(id) {
+    var _lock = lockedGuard(id);
+    if (_lock) return _lock;
     var t = getTask(id);
     if (!t) return { ok: false, message: '任务不存在' };
     if (t.status === 'NOT_STARTED') return { ok: false, message: '请先启动任务' };
@@ -690,7 +902,8 @@
       t.paused = false;
       t.finishedAt = new Date().toISOString();
       pushStageHistory(t, t.stage, 'FINISH');
-      saveTasks();
+      rememberProgress(t);
+    saveTasks();
       syncTopicStatus(t);
       notify();
       return { ok: true, message: '任务已完成，选题同步转为「已完成」' };
@@ -710,7 +923,8 @@
       t.status = 'IN_PROGRESS';
       t.finishedAt = null;
       pushStageHistory(t, t.stage, 'REOPEN');
-      saveTasks();
+      rememberProgress(t);
+    saveTasks();
       syncTopicStatus(t);
       notify();
       return { ok: true, message: '已重新打开任务，回到第 ' + t.stage + ' 阶段' };
@@ -770,6 +984,8 @@
    *    否则每敲一个字都整页重渲染，光标会丢。
    */
   function saveOutline(taskId, patch, opts) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
     var rec = outlineOf(taskId);
     Object.keys(patch || {}).forEach(function (k) { rec[k] = patch[k]; });
     rec.updatedAt = new Date().toISOString();
@@ -924,6 +1140,788 @@
   }
 
   /* ==================================================================
+     第 2 阶段「确定选材」的选材库
+
+     一个任务一份：{ taskId, seq, entries: [...] }
+     一条选材 = 素材库里的素材（或本地上传的素材）+ 选入范围（整份 / 指定页）。
+     "整份"与"第 2-3 页"算**两条不同的选材**，所以判重按 (素材 + 范围)。
+     移除选材**只影响选材库**，素材库里的素材不动 —— 这是两层的区别，界面上也这么说。
+     ================================================================== */
+
+  function readSelections() {
+    var d = readJSON(SELECTION_KEY);
+    if (!d) return false;
+    state.selections = d;
+    return true;
+  }
+
+  function saveSelections() { writeJSON(SELECTION_KEY, state.selections); }
+
+  function resetSelections() {
+    state.selections = clone(App.mock.SELECTIONS || {});
+    saveSelections();
+  }
+
+  function selections() {
+    if (!state.selections) state.selections = clone(App.mock.SELECTIONS || {});
+    return state.selections;
+  }
+
+  /** 某任务的选材库（没有就补一个空的，落库与否由调用方决定） */
+  function selectionOf(taskId) {
+    var all = selections();
+    if (!all[taskId]) all[taskId] = { taskId: taskId, seq: 0, entries: [] };
+    return all[taskId];
+  }
+
+  /** 选入范围的文字：整份 12 页 / 第 2-3 页 / 第 3 页 */
+  function scopeText(entry) {
+    if (!entry) return '';
+    if (entry.scope !== 'pages' || !(entry.pages || []).length) {
+      return '整个文件' + (entry.pageCount ? '（共 ' + entry.pageCount + ' 页）' : '');
+    }
+    return pagesText(entry.pages) + (entry.pageCount ? '（共 ' + entry.pageCount + ' 页）' : '');
+  }
+
+  /** 把指定页的页码区间压成文字：1,2,3,5,6 → 1-3、5-6 */
+  function pagesText(pages) {
+    var list = (pages || []).slice().sort(function (a, b) { return a - b; });
+    if (!list.length) return '';
+    var parts = [], start = list[0], prev = list[0];
+    for (var i = 1; i <= list.length; i++) {
+      var cur = list[i];
+      if (cur === prev + 1) { prev = cur; continue; }
+      parts.push(start === prev ? String(start) : start + '-' + prev);
+      if (cur === undefined) break;
+      start = prev = cur;
+    }
+    return '第 ' + parts.join('、') + ' 页';
+  }
+
+  /**
+   * 加入选材库
+   * @param {string} taskId
+   * @param {Array} items [{ materialId, source, title, archiveNo, category, tagIds, file, pageCount, pages }]
+   *        pages 为空＝整份文件
+   * @returns {{added:Array, skipped:Array}}
+   */
+  function addSelections(taskId, items) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
+    var rec = selectionOf(taskId);
+    var added = [], skipped = [];
+    (items || []).forEach(function (it) {
+      var pages = (it.pages || []).slice().sort(function (a, b) { return a - b; });
+      var sig = (it.materialId || it.title) + '|' + (pages.length ? pages.join(',') : 'all');
+      var dup = rec.entries.some(function (e) {
+        var ep = (e.pages || []).slice().sort(function (a, b) { return a - b; });
+        return ((e.materialId || e.title) + '|' + (ep.length ? ep.join(',') : 'all')) === sig;
+      });
+      if (dup) { skipped.push(it.title); return; }
+      rec.seq = (rec.seq || 0) + 1;
+      rec.entries.unshift({
+        id: 'SE-' + String(rec.seq).padStart(3, '0'),
+        taskId: taskId,
+        source: it.source || 'library',
+        materialId: it.materialId || null,
+        title: it.title || '',
+        archiveNo: it.archiveNo || '',
+        category: it.category || '',
+        tagIds: (it.tagIds || []).slice(),
+        scope: pages.length ? 'pages' : 'all',
+        pages: pages,
+        pageCount: Number(it.pageCount) || 0,
+        note: it.note || '',
+        /* ⚠️ 视频素材要靠 file.duration 做"插入帧"的时长校验，
+           这里只留 name/size 会把时长丢掉（曾经就是这个原因，选进来的视频看不出是视频/没有时长） */
+        file: it.file ? Object.assign({}, it.file, {
+          name: it.file.name, size: Number(it.file.size) || 0
+        }) : null,
+        addedAt: new Date().toISOString(),
+        addedBy: (state.user && state.user.name) || '未知'
+      });
+      added.push(rec.entries[0]);
+    });
+    if (added.length) { saveSelections(); notify(); }
+    return { added: added, skipped: skipped };
+  }
+
+  function removeSelections(taskId, ids) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
+    var rec = selectionOf(taskId);
+    var removed = [];
+    (ids || []).forEach(function (id) {
+      var hit = rec.entries.filter(function (e) { return e.id === id; })[0];
+      if (hit) removed.push(hit.title);
+    });
+    if (!removed.length) return { removed: [] };
+    rec.entries = rec.entries.filter(function (e) { return ids.indexOf(e.id) < 0; });
+    saveSelections();
+    notify();
+    return { removed: removed };
+  }
+
+  /* ==================================================================
+     第 3 阶段「加工编排」的正文
+
+     一个任务一份：{ taskId, chapters: { <大纲节点 id>: { text, savedAt, savedBy } } }
+     章节键就是大纲节点 id —— 导航区显示大纲、编排区写这个节点的正文，两边天然对齐。
+     ================================================================== */
+
+  function readComposes() {
+    var d = readJSON(COMPOSE_KEY);
+    if (!d) return false;
+    state.composes = d;
+    return true;
+  }
+
+  function saveComposes() { writeJSON(COMPOSE_KEY, state.composes); }
+
+  function resetComposes() {
+    state.composes = clone(App.mock.COMPOSES || {});
+    saveComposes();
+  }
+
+  function composes() {
+    if (!state.composes) state.composes = clone(App.mock.COMPOSES || {});
+    return state.composes;
+  }
+
+  function composeOf(taskId) {
+    var all = composes();
+    if (!all[taskId]) all[taskId] = { taskId: taskId, chapters: {}, savedAt: '', savedBy: '' };
+    if (!all[taskId].chapters) all[taskId].chapters = {};
+    return all[taskId];
+  }
+
+  /** 某一章的正文（没写过就返回空记录） */
+  function chapterOf(taskId, nodeId) {
+    var rec = composeOf(taskId);
+    return rec.chapters[nodeId] || { text: '', savedAt: '', savedBy: '' };
+  }
+
+  /** 正文字数（中文按字、英文按词都算 1，够用来做进度提示） */
+  function wordCount(text) {
+    var t = String(text || '').trim();
+    if (!t) return 0;
+    return t.replace(/\s+/g, '').length;
+  }
+
+  /**
+   * 保存某一章的正文
+   * ⚠️ 与大纲一样：编辑时传 opts.silent = true（只落库不 notify），
+   *    否则每敲一个字都整页重渲染、光标会丢。
+   */
+  function saveChapter(taskId, nodeId, text, opts) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
+    var rec = composeOf(taskId);
+    var now = new Date().toISOString();
+    var who = (state.user && state.user.name) || '未知';
+    rec.chapters[nodeId] = { text: String(text == null ? '' : text), savedAt: now, savedBy: who };
+    rec.savedAt = now;
+    rec.savedBy = who;
+    saveComposes();
+    if (!(opts && opts.silent)) notify();
+    return rec.chapters[nodeId];
+  }
+
+  /** 编排进度：写了多少章 / 共多少章 / 总字数 */
+  function composeStats(taskId) {
+    var nodes = outlineOf(taskId).nodes || [];
+    var rec = composeOf(taskId);
+    var written = 0, words = 0;
+    nodes.forEach(function (n) {
+      var ch = rec.chapters[n.id];
+      if (ch && String(ch.text || '').trim()) { written += 1; words += wordCount(ch.text); }
+    });
+    return { total: nodes.length, written: written, words: words };
+  }
+
+  function resetCompose(taskId, opts) {
+    var rec = composeOf(taskId);
+    rec.chapters = {};
+    rec.savedAt = '';
+    rec.savedBy = '';
+    saveComposes();
+    if (!(opts && opts.silent)) notify();
+    return rec;
+  }
+
+  /* ==================================================================
+     审核规则（系统管理 · 归档设置 → 审核规则）
+
+     数据对齐参照系统「档博通档案智能开放鉴定系统」的敏感内容管理：
+     敏感内容标题 / 敏感内容（长文本）/ 敏感类型 / 控制标志 / 是否启用。
+     ================================================================== */
+
+  var AUDIT_RULE_KEY = 'archive-proto-system:auditRules';
+
+  function readAuditRules() {
+    var d = readJSON(AUDIT_RULE_KEY);
+    if (!d) return false;
+    state.auditRules = d;
+    return true;
+  }
+
+  function saveAuditRules() { writeJSON(AUDIT_RULE_KEY, state.auditRules); }
+
+  function resetAuditRules() {
+    state.auditRules = clone(App.mock.AUDIT_RULES || []);
+    saveAuditRules();
+  }
+
+  function auditRules() {
+    if (!state.auditRules) state.auditRules = clone(App.mock.AUDIT_RULES || []);
+    return state.auditRules;
+  }
+
+  function auditRuleTypes() { return App.mock.AUDIT_RULE_TYPES || []; }
+
+  function auditControlFlags() { return App.mock.AUDIT_CONTROL_FLAGS || []; }
+
+  function controlFlagTitle(v) {
+    var f = auditControlFlags().filter(function (x) { return x.value === v; })[0];
+    return f ? f.title : (v || '');
+  }
+
+  function getAuditRule(id) {
+    return auditRules().filter(function (r) { return r.id === id; })[0] || null;
+  }
+
+  /** 审核规则命中判定的最小单位：把长文本按「（一）…（二）…」拆成条款 */
+  function auditRuleClauses(rule) {
+    if (!rule) return [];
+    if (rule.clauses && rule.clauses.length) return rule.clauses;
+    var parts = String(rule.content || '').split(/\n+/).map(function (x) { return x.trim(); })
+      .filter(function (x) { return x; });
+    /* 每行就是一条（参照系统的敏感内容就是按（一）（二）逐行排的） */
+    return parts.map(function (line, i) {
+      var m = line.match(/^（([一二三四五六七八九十]+)）\s*(.*)$/);
+      return { no: i + 1, marker: m ? '（' + m[1] + '）' : '', text: (m ? m[2] : line).trim() };
+    }).filter(function (c) { return c.text; });
+  }
+
+  /** 新增 / 修改 / 删除（id 形如 AR-021，接着现有最大号往后编） */
+  function nextAuditRuleId() {
+    var max = 0;
+    auditRules().forEach(function (r) {
+      var n = parseInt(String(r.id).replace(/\D/g, ''), 10) || 0;
+      if (n > max) max = n;
+    });
+    return 'AR-' + String(max + 1).padStart(3, '0');
+  }
+
+  function addAuditRule(data) {
+    var title = String((data && data.title) || '').trim();
+    if (!title) return { ok: false, message: '请填写敏感内容标题' };
+    if (auditRules().some(function (r) { return r.title === title; })) {
+      return { ok: false, message: '已有同名规则：' + title };
+    }
+    var typeId = Number(data.typeId) || 0;
+    var type = auditRuleTypes().filter(function (t) { return t.id === typeId; })[0];
+    var flag = data.controlFlag || (type && type.controlFlag) || 'CONTROL';
+    var now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    var rule = {
+      id: nextAuditRuleId(), title: title,
+      typeId: typeId, typeName: type ? type.name : (data.typeName || ''),
+      controlFlag: flag, controlFlagTitle: controlFlagTitle(flag),
+      enable: data.enable !== false, createDate: now,
+      content: String(data.content || '')
+    };
+    auditRules().unshift(rule);
+    saveAuditRules();
+    notify();
+    return { ok: true, message: '已新增审核规则「' + title + '」', rule: rule };
+  }
+
+  function updateAuditRule(id, data) {
+    var rule = getAuditRule(id);
+    if (!rule) return { ok: false, message: '规则不存在' };
+    var title = String((data && data.title) || '').trim();
+    if (!title) return { ok: false, message: '请填写敏感内容标题' };
+    if (auditRules().some(function (r) { return r.id !== id && r.title === title; })) {
+      return { ok: false, message: '已有同名规则：' + title };
+    }
+    var typeId = Number(data.typeId) || 0;
+    var type = auditRuleTypes().filter(function (t) { return t.id === typeId; })[0];
+    var flag = data.controlFlag || rule.controlFlag;
+    rule.title = title;
+    rule.content = String(data.content || '');
+    rule.typeId = typeId || rule.typeId;
+    rule.typeName = type ? type.name : rule.typeName;
+    rule.controlFlag = flag;
+    rule.controlFlagTitle = controlFlagTitle(flag);
+    rule.enable = data.enable !== false;
+    rule.modifyDate = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    saveAuditRules();
+    notify();
+    return { ok: true, message: '已保存审核规则「' + title + '」', rule: rule };
+  }
+
+  function deleteAuditRules(ids) {
+    var list = ids || [];
+    var before = auditRules().length;
+    state.auditRules = auditRules().filter(function (r) { return list.indexOf(r.id) < 0; });
+    saveAuditRules();
+    notify();
+    return { ok: true, message: '已删除 ' + (before - state.auditRules.length) + ' 条审核规则' };
+  }
+
+  /* ==================================================================
+     成果发布（第 5 阶段）：消息中心 + 三步审核流程 + 发布生成成果
+
+     流程按「系统管理 · 流程配置」里配的步骤与审核人走（seed 里三步都配了人）：
+       ① 编研部门领导审批 → ② 主管副馆长审批 → ③ 馆长审批
+     发起后逐级**推送审核消息**；某一步不通过 → 任务退回第 4 阶段「审核校定」并通知发起人；
+     三步都通过 → 成果推送到「编研成果」模块生成数据，任务随之**锁定**（各环节只能看、不能改），
+     并生成审核信息表（表 D.1）。
+     ================================================================== */
+
+  var MESSAGE_KEY = PREFIX + 'messages';
+  var PUBLISH_KEY = PREFIX + 'publish';
+
+  function readMessages() {
+    var d = readJSON(MESSAGE_KEY);
+    if (!d) return false;
+    state.messages = d;
+    return true;
+  }
+  function saveMessages() { writeJSON(MESSAGE_KEY, state.messages); }
+  function resetMessages() { state.messages = clone(App.mock.MESSAGES || []); saveMessages(); }
+
+  function messages() {
+    if (!state.messages) state.messages = clone(App.mock.MESSAGES || []);
+    return state.messages;
+  }
+
+  /** 推一条消息（审核消息带 flowNo / taskId，点开就能弹审核界面） */
+  function pushMessage(m) {
+    var now = new Date().toISOString();
+    var msg = {
+      id: 'MSG-' + String((messages().length + 1)).padStart(3, '0') + '-' + Date.now().toString(36).slice(-4),
+      to: m.to || '', toUserId: m.toUserId || '',
+      title: m.title || '', body: m.body || '',
+      kind: m.kind || 'info',
+      taskId: m.taskId || '', flowNo: m.flowNo || '', stepKey: m.stepKey || '',
+      at: now, read: false
+    };
+    messages().unshift(msg);
+    saveMessages();
+    notify();
+    return msg;
+  }
+
+  function messageOf(id) {
+    return messages().filter(function (m) { return m.id === id; })[0] || null;
+  }
+
+  function readMessage(id) {
+    var m = messageOf(id);
+    if (!m) return null;
+    m.read = true;
+    saveMessages();
+    notify();
+    return m;
+  }
+
+  function unreadMessageCount() {
+    return messages().filter(function (m) { return !m.read; }).length;
+  }
+
+  /** 当前用户的消息（按姓名匹配；原型里用户就是流程审核人） */
+  function myMessages() {
+    var me = (state.user && state.user.name) || '';
+    return messages().filter(function (m) { return !m.to || m.to === me; });
+  }
+
+  /* ---------------- 成果发布流程（多步，按流程配置） ---------------- */
+
+  function readPublish() {
+    var d = readJSON(PUBLISH_KEY);
+    if (!d) return false;
+    state.publish = d;
+    return true;
+  }
+  function savePublish() { writeJSON(PUBLISH_KEY, state.publish); }
+
+  /** 已发布任务的写操作统一拦在这里（各阶段只读） */
+  var LOCK_MSG = '该任务成果已发布，各环节为只读；如需修改请先由管理员撤回发布';
+  function lockedGuard(taskId) {
+    return isTaskLocked(taskId) ? { ok: false, locked: true, message: LOCK_MSG } : null;
+  }
+
+  /**
+   * 某任务的"成果发布流程"视图（页面/审核信息表都用它）。
+   * 数据源就是 :flows 里的多步流程记录 —— 步骤、意见、状态都在那儿，不再单独存一份。
+   */
+  function publishOf(taskId) {
+    var list = flows().filter(function (f) {
+      return f.type === 'PRODUCT_REVIEW' && f.targetId === taskId;
+    });
+    var f = list.length ? list[list.length - 1] : null;
+    return f ? flowView(f.flowNo) : null;
+  }
+
+  /**
+   * 把 :flows 里的一条流程记录规范成"审核界面/审核信息表"用的视图对象：
+   * steps 一定是**数组**（老的单审核人流程也会补成一步），current 指向当前待审环节的序号。
+   */
+  function flowView(flowNo) {
+    var f = typeof flowNo === 'string' ? getFlow(flowNo) : flowNo;
+    if (!f) return null;
+    var steps = flowStepsOf(f);
+    return {
+      flowNo: f.flowNo, type: f.type, taskId: f.targetId, title: f.targetName,
+      at: f.at, by: f.by, status: f.status, steps: steps,
+      current: (f.steps && f.steps.length) ? f.current : (f.status === 'REVIEWING' ? 0 : -1),
+      opinion: f.opinion, reviewedAt: f.reviewedAt || null, reviewedBy: f.reviewedBy || null,
+      finishedAt: f.finishedAt || null, publishedAt: f.finishedAt || null,
+      productId: f.productId || '', history: f.history || []
+    };
+  }
+
+
+  /** 任务是否已发布（发布后各环节锁定，只能查看） */
+  function isTaskLocked(taskId) {
+    var p = publishOf(taskId);
+    var t = getTask(taskId);
+    if (!t) return false;
+    /* 已发布（published 标记或流程通过）→ 只读；
+       种子里的"已完成"任务成果早已登记在编研成果里，同样按只读处理（评审要求：发布后各环节只能看） */
+    return !!t.published || !!(p && p.status === 'APPROVED') || t.status === 'DONE';
+  }
+
+  /** 第 5 阶段「发起审核」：按流程配置建多步流程 + 给第一步审核人推消息 */
+  function startPublishReview(taskId) {
+    var t = getTask(taskId);
+    if (!t) return { ok: false, message: '任务不存在' };
+    if (t.status !== 'IN_PROGRESS') return { ok: false, message: '只有进行中的任务可以发起成果发布审核' };
+    if (t.stage !== taskStages().length) {
+      return { ok: false, message: '请先把任务推进到第 ' + taskStages().length + ' 阶段「成果发布」' };
+    }
+    if (isTaskLocked(taskId)) return { ok: false, message: '该任务成果已发布，无需重复发起' };
+    var exist = flows().filter(function (f) {
+      return f.type === 'PRODUCT_REVIEW' && f.targetId === taskId && f.status === 'REVIEWING';
+    })[0];
+    if (exist) return { ok: false, message: '已有审核中的流程（' + exist.flowNo + '），请等待审核结果' };
+    var f = startFlow('PRODUCT_REVIEW', { id: t.id, name: t.topicName }, { submitOpinion: t.note || '' });
+    var cur = flowCurrentStep(f);
+    return { ok: true, flowNo: f.flowNo,
+      message: '已发起成果发布审核（流程 ' + f.flowNo + '），审核消息已推送给「' +
+        (cur ? cur.name + ' · ' + cur.reviewer : '—') + '」' };
+  }
+
+  /** 审某任务的成果发布流程的当前环节 */
+  function reviewPublishStep(taskId, opts) {
+    var f = flows().filter(function (x) {
+      return x.type === 'PRODUCT_REVIEW' && x.targetId === taskId;
+    }).slice(-1)[0];
+    if (!f) return { ok: false, message: '没有进行中的发布流程' };
+    return reviewFlowStep(f.flowNo, opts);
+  }
+
+  /** 兼容旧名：按流程编号审一步（流程审核模块用） */
+  function reviewStepByFlowNo(flowNo, opts) { return reviewFlowStep(flowNo, opts); }
+
+  /** 审核信息表（表 D.1）的数据：名称 / 简介 / 审核人员 / 审核意见 / 备注 —— 全部自动从系统取 */
+  function reviewFormOf(taskId) {
+    var t = getTask(taskId);
+    var rec = publishOf(taskId);
+    if (!t) return null;
+    var chapters = composeOf(taskId).chapters || {};
+    var nodes = outlineOf(taskId).nodes || [];
+    var words = 0;
+    var intro = '';
+    nodes.forEach(function (n) {
+      var ch = chapters[n.id];
+      if (!ch || !String(ch.text || '').trim()) return;
+      words += wordCount(ch.text);
+      if (!intro) intro = String(ch.text).replace(/\s+/g, ' ').trim().slice(0, 80);
+    });
+    var people = [];
+    (rec ? rec.steps : []).forEach(function (s) {
+      (s.reviewers || []).slice(0, 1).forEach(function (r) {
+        people.push({ name: r.name, dept: r.dept || '', role: r.roleLabel || '', step: s.name,
+          opinion: s.opinion || '', at: s.at || '', status: s.status });
+      });
+    });
+    /* 审核人员信息表按样例固定 3 行 */
+    while (people.length < 3) people.push({ name: '', dept: '', role: '', step: '', opinion: '', at: '', status: '' });
+    var opinions = (rec ? rec.steps : []).filter(function (s) { return s.opinion; })
+      .map(function (s) { return '【' + s.name + '·' + (s.by || '') + '】' + s.opinion; });
+    var last = (rec ? rec.steps : []).filter(function (s) { return s.status === 'PASSED'; }).slice(-1)[0];
+    return {
+      taskId: t.id, taskNo: t.id, flowNo: rec ? rec.flowNo : '',
+      name: t.topicName,
+      intro: intro || (t.note || ''),
+      words: words, chapters: nodes.length,
+      category: t.type,
+      people: people.slice(0, 3),
+      opinion: opinions.join('；') || '',
+      signer: last ? (last.by || '') : '',
+      date: rec && rec.publishedAt ? String(rec.publishedAt).slice(0, 10) : '',
+      remark: '本表由系统按「成果发布」审核流程自动生成' + (rec ? '（流程 ' + rec.flowNo + '）' : '') +
+        '；审核方式：系统内逐级推送审核' + (rec && rec.productId ? '；已生成成果 ' + rec.productId : ''),
+      productId: rec ? rec.productId : '',
+      status: rec ? rec.status : 'NOT_STARTED',
+      steps: rec ? rec.steps : []
+    };
+  }
+
+  /** 某任务最新的《编研成果审核》流程（兼容旧调用；数据源同样是 :flows） */
+  function productReviewOf(taskId) {
+    var list = flows().filter(function (f) {
+      return f.type === 'PRODUCT_REVIEW' && f.targetId === taskId;
+    });
+    return list.length ? list[list.length - 1] : null;
+  }
+
+  /** 兼容旧入口：发起《编研成果审核》＝发起成果发布审核流程（按流程配置逐级审核） */
+  function createProductReview(taskId) {
+    return startPublishReview(taskId);
+  }
+
+  /** 「重置演示数据」以外的地方不要动消息与发布记录 */
+  function resetPublish() { state.publish = {}; savePublish(); }
+  function reseedMessages() { resetMessages(); }
+
+  /* ==================================================================
+     审核校定（第 4 阶段）的审核结果与修改记录
+
+     结构：{ [taskId]: { runs: { political|professional|compliance: { at, by, items: [] } },
+                        fixes: [ { itemId, kind, chapterId, from, to, at, by, mode } ] } }
+     审核结果**不预置**：要点了"开始审核"才跑（跑的是 audit.js 里的本地模拟审核引擎）。
+     ================================================================== */
+
+  var AUDIT_RESULT_KEY = 'archive-proto-system:auditResults';
+
+  function readAuditResults() {
+    var d = readJSON(AUDIT_RESULT_KEY);
+    if (!d) return false;
+    state.auditResults = d;
+    return true;
+  }
+
+  function saveAuditResults() { writeJSON(AUDIT_RESULT_KEY, state.auditResults); }
+
+  function optAuditResults() {
+    if (!state.auditResults) state.auditResults = {};
+    return state.auditResults;
+  }
+
+  function auditOf(taskId) {
+    var all = optAuditResults();
+    if (!all[taskId]) all[taskId] = { taskId: taskId, runs: {}, fixes: [] };
+    if (!all[taskId].runs) all[taskId].runs = {};
+    if (!all[taskId].fixes) all[taskId].fixes = [];
+    return all[taskId];
+  }
+
+  /**
+   * 审核项的"身份"：同一处问题重复审核时要认得出是同一条。
+   * 用 类别 + 章节 + 命中文本（规则命中再加规则 id）—— 位置不作数（改过正文后位置会变）。
+   */
+  function auditItemKey(it) {
+    return [it.kind, it.chapterId, it.ruleId || '', String(it.text || '')].join('|');
+  }
+
+  /**
+   * 跑完一类审核后把结果存下来。
+   * ⚠ **追加而不是覆盖**（评审要求）：之前审核出的问题（含已校定 / 已忽略的状态）保留，
+   * 这次新发现的才追加进来 —— 否则"改完再审核"会把历史处理结果冲掉。
+   * @returns {{run:object, added:number, kept:number}}
+   */
+  function saveAuditRun(taskId, kind, items) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
+    var rec = auditOf(taskId);
+    var prev = (rec.runs[kind] && rec.runs[kind].items) || [];
+    var seen = {};
+    prev.forEach(function (it) { seen[auditItemKey(it)] = true; });
+    var added = [];
+    (items || []).forEach(function (it) {
+      var key = auditItemKey(it);
+      if (seen[key]) return;              /* 老问题：保留原来那条（状态 / 修改信息都在） */
+      seen[key] = true;
+      added.push(it);
+    });
+    rec.runs[kind] = {
+      at: new Date().toISOString(),
+      by: (state.user && state.user.name) || '未知',
+      items: prev.concat(added)
+    };
+    saveAuditResults();
+    notify();
+    return { run: rec.runs[kind], added: added.length, kept: prev.length };
+  }
+
+  /** 还没处理（未校定）的审核项 —— 重跑审核前要求先处理完 */
+  function pendingAuditItems(taskId) {
+    var rec = auditOf(taskId);
+    var out = [];
+    ['political', 'professional', 'compliance'].forEach(function (k) {
+      var run = rec.runs[k];
+      if (!run) return;
+      run.items.forEach(function (it) {
+        if (it.status === 'open') out.push(it);
+      });
+    });
+    return out;
+  }
+
+  function auditItems(taskId, kind) {
+    var run = auditOf(taskId).runs[kind];
+    return run ? run.items : null;      /* null = 这类还没跑过 */
+  }
+
+  /** 把某一项的片段替换成新文本（改的是**章节正文**本身），并把后续项的位置顺移 */
+  function replaceFragment(taskId, chapterId, start, end, newText) {
+    var ch = chapterOf(taskId, chapterId);
+    var text = String(ch.text || '');
+    if (start < 0 || end > text.length || start > end) {
+      return { ok: false, message: '片段位置已失效，请重新审核' };
+    }
+    var from = text.slice(start, end);
+    var next = text.slice(0, start) + newText + text.slice(end);
+    saveChapter(taskId, chapterId, next, { silent: true });
+
+    var delta = newText.length - from.length;
+    var rec = auditOf(taskId);
+    Object.keys(rec.runs).forEach(function (kind) {
+      var keep = [];
+      rec.runs[kind].items.forEach(function (it) {
+        if (it.chapterId !== chapterId) { keep.push(it); return; }
+        /* 与修改范围重叠的项：已经被这次修改覆盖，去掉 */
+        if (it.start < end && it.end > start) return;
+        if (it.start >= end) { it.start += delta; it.end += delta; }
+        if (it.hits) {
+          it.hits = it.hits.filter(function (h) {
+            if (h.start < end && h.end > start) return false;
+            if (h.start >= end) { h.start += delta; h.end += delta; }
+            return true;
+          });
+        }
+        keep.push(it);
+      });
+      rec.runs[kind].items = keep;
+    });
+    saveAuditResults();
+    notify();
+    return { ok: true, message: '已修改片段', from: from, to: newText };
+  }
+
+  /** 采用建议（AI 自动修改 / 手工改）→ 改正文 + 标记该项已修改 + 记修改信息 */
+  function fixAuditItem(taskId, kind, itemId, opts) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
+    var rec = auditOf(taskId);
+    var run = rec.runs[kind];
+    if (!run) return { ok: false, message: '这类审核还没跑过' };
+    var it = run.items.filter(function (x) { return x.id === itemId; })[0];
+    if (!it) return { ok: false, message: '审核项不存在' };
+    var to = (opts && opts.text != null) ? String(opts.text) : String(it.suggestion || '');
+    if (!to) return { ok: false, message: '这一项没有可用的修改建议，请手工填写' };
+    var from = it.text;
+    var r = replaceFragment(taskId, it.chapterId, it.start, it.end, to);
+    if (!r.ok) return r;
+    /* replaceFragment 会把重叠项删掉 —— 这里把本项补回去并标记已修改 */
+    run.items.push(Object.assign({}, it, {
+      status: 'fixed',
+      fix: { itemId: it.id, kind: kind, chapterId: it.chapterId, chapterTitle: it.chapterTitle,
+        start: it.start, from: from, to: to, at: new Date().toISOString(),
+        by: (state.user && state.user.name) || '未知',
+        mode: (opts && opts.mode) || 'manual',
+        reason: it.ruleTitle || it.title || '' }
+    }));
+    rec.fixes.unshift(run.items[run.items.length - 1].fix);
+    saveAuditResults();
+    notify();
+    return { ok: true, message: '已' + (((opts && opts.mode) === 'ai') ? '由 AI 自动修改' : '修改') +
+      '：「' + from + '」→「' + to + '」', item: run.items[run.items.length - 1] };
+  }
+
+  /**
+   * 标注已修改：正文由用户在"校定内容"界面里改过了，这里只做**标注 + 记录修改信息**。
+   * 取当前正文里该位置的片段与命中时的原文对比：
+   *   · 变了 → 记为一次修改（原文 → 改后）
+   *   · 没变 → 记为"人工确认"（from === to，修改记录里看得出来）
+   */
+  function markAuditFixed(taskId, kind, itemId, opts) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
+    var rec = auditOf(taskId);
+    var run = rec.runs[kind];
+    if (!run) return { ok: false, message: '这类审核还没跑过' };
+    var it = run.items.filter(function (x) { return x.id === itemId; })[0];
+    if (!it) return { ok: false, message: '审核项不存在' };
+    var text = String(chapterOf(taskId, it.chapterId).text || '');
+    var now = text.slice(it.start, it.start + Math.max(it.end - it.start, 0));
+    var fix = {
+      itemId: it.id, kind: kind, chapterId: it.chapterId, chapterTitle: it.chapterTitle,
+      start: it.start, from: it.text, to: now, at: new Date().toISOString(),
+      by: (state.user && state.user.name) || '未知',
+      mode: 'mark',
+      reason: it.ruleTitle || it.title || '',
+      note: (opts && opts.note) || (now === it.text ? '人工确认（正文未变）' : '在校定界面修改后标注')
+    };
+    it.status = 'fixed';
+    it.fix = fix;
+    rec.fixes.unshift(fix);
+    saveAuditResults();
+    notify();
+    return {
+      ok: true,
+      message: (now === it.text ? '已标注为「已修改」（正文未变，记录为人工确认）'
+        : '已标注「已修改」：「' + it.text + '」→「' + now + '」'),
+      item: it
+    };
+  }
+
+  function ignoreAuditItem(taskId, kind, itemId, note) {
+    var _lock = lockedGuard(taskId);
+    if (_lock) return _lock;
+    var rec = auditOf(taskId);
+    var run = rec.runs[kind];
+    if (!run) return { ok: false, message: '这类审核还没跑过' };
+    var it = run.items.filter(function (x) { return x.id === itemId; })[0];
+    if (!it) return { ok: false, message: '审核项不存在' };
+    it.status = 'ignored';
+    it.ignoreNote = note || '';
+    saveAuditResults();
+    notify();
+    return { ok: true, message: '已忽略该项（可再次审核重新命中）' };
+  }
+
+  function resetAudit(taskId) {
+    optAuditResults()[taskId] = { taskId: taskId, runs: {}, fixes: [] };
+    saveAuditResults();
+    notify();
+  }
+
+  /** 汇总：每类的命中/待处理/已修改/已忽略，以及历史修改条数 */
+  function auditSummary(taskId) {
+    var rec = auditOf(taskId);
+    var out = { kinds: {}, fixes: rec.fixes.length, hasRun: false };
+    ['political', 'professional', 'compliance'].forEach(function (k) {
+      var run = rec.runs[k];
+      if (run) out.hasRun = true;
+      var items = run ? run.items : [];
+      out.kinds[k] = {
+        ran: !!run, at: run ? run.at : '', by: run ? run.by : '',
+        total: items.length,
+        open: items.filter(function (i) { return i.status === 'open'; }).length,
+        fixed: items.filter(function (i) { return i.status === 'fixed'; }).length,
+        ignored: items.filter(function (i) { return i.status === 'ignored'; }).length
+      };
+    });
+    out.open = out.kinds.political.open + out.kinds.professional.open + out.kinds.compliance.open;
+    out.total = out.kinds.political.total + out.kinds.professional.total + out.kinds.compliance.total;
+    return out;
+  }
+
+  /* ==================================================================
      编研成果
      ================================================================== */
 
@@ -1051,6 +2049,288 @@
       if (!seen[a.category]) { seen[a.category] = 1; out.push(a.category); }
     });
     return out;
+  }
+
+  /* ==================================================================
+     归档材料的增删改（评审要求：每条目录都能修改，也能新增数据）
+
+     字段来自「归档设置」的字典 —— 表单与列表同一份口径：归档设置里加一个字段，
+     材料归档的列表列与录入表单会同时出现它（这里是"配置驱动"的落点）。
+     ================================================================== */
+
+  function archiveItemOf(id) {
+    return archiveItems().filter(function (a) { return a.id === id; })[0] || null;
+  }
+
+  function nextArchiveItemId() {
+    var max = 0;
+    archiveItems().forEach(function (a) {
+      var m = /^AR-(\d+)$/.exec(String(a.id));
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    });
+    return 'AR-' + String(max + 1).padStart(4, '0');
+  }
+
+  /** 「所属阶段」的可选值：立项 + 五个阶段（列表里显示成"第 N 阶段 · 名称"） */
+  function archiveStageChoices() {
+    return [{ value: 0, label: '立项' }].concat(taskStages().map(function (st, i) {
+      return { value: i + 1, label: '第 ' + (i + 1) + ' 阶段 · ' + st.title };
+    }));
+  }
+
+  function archiveStageLabel(n) {
+    n = parseInt(n, 10) || 0;
+    return n === 0 ? '立项' : String(((taskStages()[n - 1] || {}).title) || '');
+  }
+
+  /** 用字段字典把表单数据规整成一条归档材料（新字段自动带上；日期/数字按类型收口） */
+  function buildArchiveItem(data) {
+    var item = {};
+    archiveFields().forEach(function (f) {
+      var raw = data[f.key];
+      if (f.type === '数字') item[f.key] = Math.max(0, parseInt(raw, 10) || 0);
+      else item[f.key] = String(raw === undefined || raw === null ? '' : raw).trim();
+    });
+    item.stage = parseInt(data.stage, 10) || 0;
+    item.stageLabel = archiveStageLabel(item.stage);
+    item.attachments = (data.attachments || []).map(function (a) {
+      var m = /\.([A-Za-z0-9]+)$/.exec(String(a.name || ''));
+      return { name: String(a.name || '').trim(), size: Number(a.size) || 0,
+        format: String(a.format || (m ? m[1].toUpperCase() : '')).trim() };
+    }).filter(function (a) { return !!a.name; });
+    return item;
+  }
+
+  /** 必填校验取字段字典的 required（材料名称默认必填，字段可改） */
+  function validateArchiveItem(data) {
+    var missing = archiveFields().filter(function (f) {
+      var v = data[f.key];
+      return f.required && !String(v === undefined || v === null ? '' : v).trim();
+    });
+    if (missing.length) {
+      return { ok: false, message: '请填写' + missing.map(function (f) { return '「' + f.name + '」'; }).join('、') };
+    }
+    return { ok: true };
+  }
+
+  function addArchiveItem(data) {
+    var t = getTask(data.taskId);
+    if (!t) return { ok: false, message: '请选择所属编研任务' };
+    var v = validateArchiveItem(data);
+    if (!v.ok) return v;
+    var item = buildArchiveItem(data);
+    item.id = nextArchiveItemId();
+    item.taskId = t.id;
+    item.taskTopic = t.topicName;
+    item.createdAt = new Date().toISOString();
+    item.updatedAt = item.createdAt;
+    item.updatedBy = (state.user && state.user.name) || '';
+    item.manual = true;
+    archiveItems().unshift(item);
+    saveArchive();
+    notify();
+    return { ok: true, item: item, message: '已新增归档材料「' + item.name + '」' };
+  }
+
+  function updateArchiveItem(id, data) {
+    var item = archiveItemOf(id);
+    if (!item) return { ok: false, message: '归档材料不存在' };
+    var t = getTask(data.taskId || item.taskId);
+    if (!t) return { ok: false, message: '请选择所属编研任务' };
+    var v = validateArchiveItem(data);
+    if (!v.ok) return v;
+    var next = buildArchiveItem(data);
+    Object.keys(next).forEach(function (k) { item[k] = next[k]; });
+    item.taskId = t.id;
+    item.taskTopic = t.topicName;
+    item.manual = true;         /* 人工改过的条目：自动归档不再覆盖 */
+    item.updatedAt = new Date().toISOString();
+    item.updatedBy = (state.user && state.user.name) || '';
+    saveArchive();
+    notify();
+    return { ok: true, item: item, message: '已保存「' + item.name + '」的修改' };
+  }
+
+  function deleteArchiveItems(ids) {
+    var names = [];
+    (ids || []).forEach(function (id) {
+      var item = archiveItemOf(id);
+      if (item) names.push(item.name);
+    });
+    if (!names.length) return { ok: false, message: '没有可删除的归档材料' };
+    state.archiveItems = archiveItems().filter(function (a) { return ids.indexOf(a.id) < 0; });
+    saveArchive();
+    notify();
+    return { ok: true, deleted: names,
+      message: names.length === 1 ? '已删除「' + names[0] + '」' : '已删除 ' + names.length + ' 件归档材料' };
+  }
+
+  /* ==================================================================
+     成果发布审核通过后的自动归档（评审要求）
+
+     四类材料随编研任务一起归档：
+       ① 选题可行性评估表及附件（附件清单挂在这一条目里）② 审核意见表
+       ③ 确定选材环节的素材目录（只生成目录表，不含素材文件）④ 编研成果定稿
+     幂等：同一个任务、同一类材料只补一次（`autoKey` 认人），人工改过的条目不覆盖。
+     ================================================================== */
+
+  var PUBLISH_ARCHIVE_DEFS = [
+    { key: 'topic-form', name: '选题可行性评估表及附件', category: '立项材料', stage: 0,
+      format: 'PDF+OFD', retention: '永久', carrier: '电子',
+      /* 种子里每个任务本来就有一条「选题可行性评估表」（立项材料）：把附件并进它，
+         而不是再加一行——材料名称按评审要求改成「选题可行性评估表及附件」 */
+      mergeWith: function (a) { return a.stage === 0 && a.name === '选题可行性评估表'; } },
+    { key: 'audit-form', name: '审核意见表', category: '审校记录', stage: 5,
+      format: 'PDF+OFD', retention: '永久', carrier: '电子' },
+    { key: 'material-catalog', name: '素材目录', category: '选材材料', stage: 2,
+      format: 'PDF', retention: '长期', carrier: '电子',
+      mergeWith: function (a) { return a.stage === 2 && String(a.name).indexOf('选材清单') === 0; } },
+    { key: 'final-draft', name: '编研成果定稿', category: '成果文件', stage: 5,
+      format: 'PDF+OFD', retention: '永久', carrier: '电子',
+      mergeWith: function (a) { return a.stage === 5 && a.name === '成果正式文件'; } }
+  ];
+
+  function autoArchiveOf(taskId) {
+    return archiveOfTask(taskId).filter(function (a) { return a.auto === 'publish'; });
+  }
+
+  /** 《选题可行性评估表》的附件：取立选项题上登记的附件（原型不存实体文件，只登记名称/大小/格式） */
+  function topicAttachmentsOf(taskId) {
+    var t = getTask(taskId);
+    var topic = t && t.topicId ? getTopic(t.topicId) : null;
+    return (((topic && topic.attachments) || [])).map(function (a) {
+      var m = /\.([A-Za-z0-9]+)$/.exec(String(a.name || ''));
+      return { name: a.name, size: Number(a.size) || 0, format: m ? m[1].toUpperCase() : '' };
+    });
+  }
+
+  /**
+   * 把"发布审核通过后应归档的四类材料"补进材料归档。
+   * @param {string} taskId
+   * @param {Object} [product] 编研成果（缺省取该任务已登记的成果）
+   * @param {Object} [flow]    成果发布流程（缺省取最近一次通过的流程）
+   * @returns {{added:Array}}
+   */
+  function autoArchiveProduct(taskId, product, flow) {
+    var t = getTask(taskId);
+    if (!t) return { added: [] };
+    var p = product || productOfTask(taskId);
+    if (!p) return { added: [] };              /* 没有成果 = 发布流程还没走完 */
+    var f = flow || flows().filter(function (x) {
+      return x.type === 'PRODUCT_REVIEW' && x.targetId === taskId && x.status === 'APPROVED';
+    }).slice(-1)[0] || null;
+    var now = new Date().toISOString();
+    var pubDate = String((f && (f.finishedAt || f.at)) || p.publishedAt || now).slice(0, 10);
+    var words = Number(p.words) || 0;
+    var selCount = selectionOf(taskId).entries.length;
+    var attach = topicAttachmentsOf(taskId);
+    var stageDate = function (stage) {
+      var h = (t.stageHistory || []).filter(function (x) { return x.stage === stage; })[0];
+      return String((h && h.at) || t.createdAt || now).slice(0, 10);
+    };
+    var detail = {
+      'topic-form': { pages: 6, formedAt: stageDate(0), note: '立项时填报的《选题可行性评估表》' +
+          (attach.length ? '，含 ' + attach.length + ' 个附件（附件清单见本条目的「附件」）' : '（无附件）'),
+        attachments: attach },
+      'audit-form': { pages: 2, formedAt: pubDate, note: '表 D.1《审核意见表》：含各级审核意见、签字与日期' +
+          (f ? '（流程 ' + f.flowNo + '）' : ''), attachments: [] },
+      'material-catalog': { pages: 1 + Math.ceil(selCount / 12), formedAt: stageDate(2),
+        note: '确定选材环节生成的素材目录表，共 ' + selCount + ' 条（仅目录，不含素材文件）', attachments: [] },
+      'final-draft': { pages: Math.max(1, Math.ceil(words / 800)), formedAt: pubDate,
+        note: '编研成果定稿：' + (words || 0) + ' 字，格式 ' + ((p.formats || []).join('+') || 'PDF'),
+        attachments: [] }
+    };
+    var added = [];
+    PUBLISH_ARCHIVE_DEFS.forEach(function (def) {
+      var exist = autoArchiveOf(taskId).filter(function (a) { return a.autoKey === def.key; })[0];
+      if (exist) {
+        /* 种子里的历史成果没有附件清单：没人改过就补一次（人工改过的不动） */
+        if (!exist.manual && def.key === 'topic-form' && attach.length &&
+            !(exist.attachments || []).length) {
+          exist.attachments = attach;
+          added.push(exist);
+        }
+        return;
+      }
+      /* 既有过程材料能对上号：并成一条（改名/改格式/挂附件/标自动归档），不新增重复行 */
+      var merge = def.mergeWith ? archiveOfTask(taskId).filter(function (a) {
+        return !a.auto && def.mergeWith(a);
+      })[0] : null;
+      var d = detail[def.key] || {};
+      if (merge) {
+        merge.name = def.name;
+        merge.category = def.category;
+        merge.stage = def.stage;
+        merge.stageLabel = archiveStageLabel(def.stage);
+        merge.format = def.format;
+        merge.retention = def.retention;
+        merge.carrier = def.carrier;
+        merge.note = [merge.note, d.note].filter(Boolean).join('　');
+        merge.attachments = (d.attachments || []).concat(merge.attachments || []);
+        merge.security = p.security || merge.security || '公开';
+        merge.auto = 'publish';
+        merge.autoKey = def.key;
+        merge.flowNo = f ? f.flowNo : '';
+        merge.productId = p.id || '';
+        merge.updatedAt = now;
+        merge.updatedBy = '系统自动归档';
+        added.push(merge);
+        return;
+      }
+      archiveItems().push({
+        id: nextArchiveItemId(),
+        taskId: t.id, taskTopic: t.topicName,
+        name: def.name, category: def.category,
+        stage: def.stage, stageLabel: archiveStageLabel(def.stage),
+        format: def.format, pages: d.pages || 1, copies: 1, carrier: def.carrier,
+        formedAt: d.formedAt || pubDate, archivedAt: pubDate,
+        archivist: (t.team && t.team.archivist) || ((state.user && state.user.name) || '系统'),
+        retention: def.retention, security: p.security || '公开',
+        fileNo: t.id + '-' + def.stage + String(archiveItems().length % 9 + 1),
+        note: d.note || '',
+        attachments: d.attachments || [],
+        auto: 'publish', autoKey: def.key,
+        flowNo: f ? f.flowNo : '', productId: p.id || '',
+        createdAt: now, updatedAt: now, updatedBy: '系统自动归档'
+      });
+      added.push(archiveItems()[archiveItems().length - 1]);
+    });
+    if (added.length) { saveArchive(); notify(); }
+    return { added: added };
+  }
+
+  /**
+   * 给"已完成且已登记编研成果"的任务补齐这四类材料。
+   * 种子里早年的成果没走过这次加的流程，补齐后各任务的归档口径才一致。
+   */
+  function syncPublishedArchives() {
+    var added = [];
+    tasks().forEach(function (t) {
+      var p = productOfTask(t.id);
+      if (!p && !t.published) return;
+      added = added.concat(autoArchiveProduct(t.id, p, null).added);
+    });
+    return added;
+  }
+
+  /**
+   * 「素材目录」条目里的目录表：直接由该任务的**选材库**派生
+   * （发布后任务锁定、选材库已冻结，派生结果等价于发布那一刻的快照；
+   *   这样种子里的历史成果与人工新增的条目都能看到真实的目录，不用另存一份）
+   */
+  function archiveCatalog(item) {
+    if (!item) return [];
+    var byName = String(item.name || '').indexOf('素材目录') >= 0;
+    if (!byName && item.autoKey !== 'material-catalog') return [];
+    return selectionOf(item.taskId).entries.map(function (e, i) {
+      return {
+        no: i + 1, id: e.id, title: e.title, archiveNo: e.archiveNo,
+        category: e.category || '', source: e.source === 'library' ? '素材库' : '档案检索',
+        scope: e.scope === 'pages' ? pagesText(e.pages) : '整份文件',
+        pageCount: e.pageCount || 0,
+        file: e.file ? e.file.name : '', size: e.file ? e.file.size : 0
+      };
+    });
   }
 
   /* ---- 归档字段字典 ---- */
@@ -1183,7 +2463,12 @@
     user = user || state.user;
     if (!user) return false;
     if (user.isAdmin) return true;
-    return f.reviewer === user.name || f.by === user.name || f.reviewedBy === user.name;
+    if (f.reviewer === user.name || f.by === user.name || f.reviewedBy === user.name) return true;
+    /* 多步流程：任一环节的审核人、审核过的人都要能看到（评审要求：发起或审核都在流程审核页生成数据） */
+    return flowStepsOf(f).some(function (s) {
+      return s.by === user.name || s.reviewer === user.name ||
+        (s.reviewers || []).some(function (r) { return r.name === user.name; });
+    });
   }
 
   /** 能否审批：审核中 且（是它指定的审核人 或 admin） */
@@ -1216,75 +2501,294 @@
     });
   }
 
-  /** 选题发起《编研选题立项审核》 */
-  function submitTopicReview(id) {
-    var t = getTopic(id);
-    if (!t) return { ok: false, message: '选题不存在' };
-    if (t.review && t.review.status === 'REVIEWING') {
-      return { ok: false, message: '该选题已有审核中的流程（' + t.review.flowNo + '）' };
-    }
-    var now = new Date().toISOString();
-    var who = (state.user && state.user.name) || '未知';
-    var flowNo = nextFlowNo('LX');
-    var reviewer = defaultReviewer();
-    t.review = { flowNo: flowNo, at: now, by: who, reviewer: reviewer, status: 'REVIEWING' };
-    t.updatedAt = now;
-    state.flows.push({
-      flowNo: flowNo,
-      type: 'TOPIC_REVIEW',
-      targetId: t.id,
-      targetName: t.name,
-      at: now,
-      by: who,
-      reviewer: reviewer,
-      status: 'REVIEWING',
-      opinion: '', reviewedAt: null, reviewedBy: null,
-      history: [{ at: now, by: who, action: 'SUBMIT', opinion: '' }]
+
+  /* ---------------- 多步流程引擎（选题立项审核 / 编研成果审核共用） ----------------
+     评审要求：两类流程都按「流程配置」的步骤与审核人走，**发起或审核都要在对应用户的
+     流程审核页面生成数据** —— 所以步骤级状态直接落在 :flows 记录里（reviewer 始终指向
+     "当前环节审核人"，这样上面的 canSeeFlow / canReviewFlow 不用改）。 */
+
+  /** 按流程配置生成步骤快照（发起时冻结，之后改配置不影响已发起的流程） */
+  function flowStepsSnapshot() {
+    return flowSteps().map(function (s) {
+      var rs = (s.reviewers || []).slice();
+      return {
+        key: s.key, name: s.name, icon: s.icon || 'file-text',
+        reviewers: rs.map(function (r) { return { name: r.name, roleLabel: r.roleLabel, dept: r.dept }; }),
+        reviewer: rs.length ? rs[0].name : '',
+        status: rs.length ? 'PENDING' : 'SKIPPED',
+        opinion: '', at: '', by: ''
+      };
     });
-    saveTopics();
-    notify();
-    return { ok: true, message: '已发起立项审核，流程编号 ' + flowNo, flowNo: flowNo };
   }
 
-  /** 某任务的成果审核流程（最新一条） */
-  function productReviewOf(taskId) {
-    var list = flows().filter(function (f) {
-      return f.type === 'PRODUCT_REVIEW' && f.targetId === taskId;
-    });
-    return list.length ? list[list.length - 1] : null;
+  function firstPendingStepOf(steps) {
+    for (var i = 0; i < steps.length; i++) {
+      if (steps[i].status === 'PENDING') return i;
+    }
+    return -1;
+  }
+
+  /** 流程的步骤序列（兼容早期"单审核人"的老流程：把它当成只有一步） */
+  function flowStepsOf(f) {
+    if (!f) return [];
+    if (f.steps && f.steps.length) return f.steps;
+    return [{ key: 'single', name: '审核', reviewers: [], reviewer: f.reviewer || '',
+      status: f.status === 'REVIEWING' ? 'PENDING'
+        : (f.status === 'APPROVED' ? 'PASSED' : 'REJECTED'),
+      opinion: f.opinion || '', at: f.reviewedAt || '', by: f.reviewedBy || '' }];
+  }
+
+  function flowCurrentStep(f) {
+    if (!f || f.status !== 'REVIEWING') return null;
+    if (f.steps && f.steps.length) return f.steps[f.current] || null;
+    return flowStepsOf(f)[0] || null;
   }
 
   /**
-   * 编研任务发起《编研成果审核校定》流程
-   * 审核人取该任务的「编辑审核人员」，未指定时用默认审核人。
+   * 发起一个多步流程
+   * @param kind 'TOPIC_REVIEW'（选题立项审核）| 'PRODUCT_REVIEW'（编研成果审核）
    */
-  function createProductReview(taskId) {
-    var t = getTask(taskId);
-    if (!t) return { ok: false, message: '任务不存在' };
-    if (t.status !== 'IN_PROGRESS') return { ok: false, message: '只有进行中的任务可以发起成果审核' };
-    if (t.stage < 5) return { ok: false, message: '请先推进到第 5 阶段「审核校定」再发起审核' };
-    var exist = productReviewOf(taskId);
-    if (exist && exist.status === 'REVIEWING') {
-      return { ok: false, message: '该任务已有审核中的流程（' + exist.flowNo + '）' };
+  function startFlow(kind, target, opts) {
+    opts = opts || {};
+    var now = new Date().toISOString();
+    var who = (state.user && state.user.name) || '未知';
+    var steps = flowStepsSnapshot();
+    var f = {
+      flowNo: nextFlowNo(kind === 'PRODUCT_REVIEW' ? 'FB' : 'LX'),
+      type: kind,
+      targetId: target.id,
+      targetName: target.name,
+      at: now, by: who,
+      steps: steps,
+      current: firstPendingStepOf(steps),
+      totalSteps: steps.length,
+      reviewer: '',            /* 见下：始终指向当前环节审核人 */
+      status: 'REVIEWING',
+      opinion: '', reviewedAt: null, reviewedBy: null,
+      history: [{ at: now, by: who, action: 'SUBMIT', opinion: opts.submitOpinion || '' }]
+    };
+    var cur = f.current >= 0 ? steps[f.current] : null;
+    f.reviewer = cur ? cur.reviewer : '';
+    state.flows.push(f);
+    pushMessage({
+      to: cur ? cur.reviewer : who,
+      title: (kind === 'PRODUCT_REVIEW' ? '成果发布审核待办：' : '选题立项审核待办：') + target.name,
+      body: '流程 ' + f.flowNo + '　环节：' + (cur ? cur.name : '—') + '　发起人：' + who,
+      kind: kind === 'PRODUCT_REVIEW' ? 'publish-review' : 'topic-review',
+      taskId: kind === 'PRODUCT_REVIEW' ? target.id : '', flowNo: f.flowNo,
+      stepKey: cur ? cur.key : ''
+    });
+    saveFlows();
+    notify();
+    return f;
+  }
+
+  /** 流程记录与选题存在同一个载荷里（见 readTopics / saveTopics） */
+  function saveFlows() { saveTopics(); }
+
+  /**
+   * 审核流程的当前环节：通过 → 推下一步（或收尾）；不通过 → 终止并通知发起人
+   * @param {{pass:boolean, opinion:string}} opts
+   */
+  function reviewFlowStep(flowNo, opts) {
+    var f = getFlow(flowNo);
+    if (!f) return { ok: false, message: '流程不存在' };
+    if (f.status !== 'REVIEWING') return { ok: false, message: '该流程已结束' };
+    var steps = flowStepsOf(f);
+    var idx = (f.steps && f.steps.length) ? f.current : 0;
+    var step = steps[idx];
+    if (!step) return { ok: false, message: '没有待审核的环节' };
+    var opinion = String((opts && opts.opinion) || '').trim();
+    if (!(opts && opts.pass) && !opinion) {
+      return { ok: false, message: '审核不通过时必须填写审核意见' };
     }
     var now = new Date().toISOString();
     var who = (state.user && state.user.name) || '未知';
-    var reviewer = (t.team && t.team.editor) || defaultReviewer();
-    var flow = {
-      flowNo: nextFlowNo('SH'),
-      type: 'PRODUCT_REVIEW',
-      targetId: t.id,
-      targetName: t.topicName,
-      at: now, by: who, reviewer: reviewer,
-      status: 'REVIEWING', opinion: '', reviewedAt: null, reviewedBy: null,
-      history: [{ at: now, by: who, action: 'SUBMIT', opinion: '' }]
-    };
-    state.flows.push(flow);
-    t.reviewFlowNo = flow.flowNo;
-    saveTasks();
+
+    step.status = (opts && opts.pass) ? 'PASSED' : 'REJECTED';
+    step.opinion = opinion;
+    step.at = now;
+    step.by = who;
+    if (!f.steps) { f.steps = steps; f.totalSteps = steps.length; f.current = 0; }
+
+    /* ---------- 不通过：终止 + 通知发起人（成果流程还要退回审核校定） ---------- */
+    if (!(opts && opts.pass)) {
+      f.status = 'REJECTED';
+      f.opinion = opinion;
+      f.reviewedAt = now;
+      f.reviewedBy = who;
+      f.finishedAt = now;
+      f.current = -1;
+      f.reviewer = '';
+      pushFlowHistory(f, 'REJECTED', opinion);
+      var extra = '';
+      if (f.type === 'PRODUCT_REVIEW') {
+        var task = getTask(f.targetId);
+        if (task) {
+          task.paused = false;
+          saveTasks();
+          setTaskStage(task.id, 4);
+        }
+        extra = '　任务已退回「审核校定」';
+      } else {
+        var topic = getTopic(f.targetId);
+        if (topic && topic.review) {
+          topic.review.status = 'REJECTED';
+          topic.review.opinion = opinion;
+          topic.review.reviewedAt = now;
+          topic.review.reviewedBy = who;
+          topic.updatedAt = now;
+          saveTopics();
+        }
+      }
+      pushMessage({
+        to: f.by,
+        title: (f.type === 'PRODUCT_REVIEW' ? '成果发布审核未通过：' : '选题立项审核未通过：') + f.targetName,
+        body: '流程 ' + f.flowNo + '　环节：' + step.name + '　审核人：' + who +
+          '　意见：' + opinion + extra,
+        kind: f.type === 'PRODUCT_REVIEW' ? 'publish-rejected' : 'topic-rejected',
+        taskId: f.type === 'PRODUCT_REVIEW' ? f.targetId : '',
+        flowNo: f.flowNo, stepKey: step.key
+      });
+      saveFlows();
+      notify();
+      return { ok: true, rejected: true,
+        message: '已记录不通过意见' + (f.type === 'PRODUCT_REVIEW'
+          ? '，任务退回「审核校定」' : '，选题立项审核未通过') + '，并已通知发起人 ' + f.by };
+    }
+
+    /* ---------- 通过：还有下一步就流转，否则收尾 ---------- */
+    var next = firstPendingStepOf(steps);
+    if (next >= 0) {
+      f.current = next;
+      f.reviewer = steps[next].reviewer;
+      pushFlowHistory(f, 'PASS', opinion);
+      pushMessage({
+        to: f.reviewer,
+        title: (f.type === 'PRODUCT_REVIEW' ? '成果发布审核待办：' : '选题立项审核待办：') + f.targetName,
+        body: '流程 ' + f.flowNo + '　环节：' + steps[next].name + '　上一环节「' + step.name + '」已通过',
+        kind: f.type === 'PRODUCT_REVIEW' ? 'publish-review' : 'topic-review',
+        taskId: f.type === 'PRODUCT_REVIEW' ? f.targetId : '',
+        flowNo: f.flowNo, stepKey: steps[next].key
+      });
+      saveFlows();
+      notify();
+      return { ok: true, message: '「' + step.name + '」已通过，已推送下一环节「' + steps[next].name +
+        ' · ' + steps[next].reviewer + '」' };
+    }
+
+    f.status = 'APPROVED';
+    f.opinion = opinion;
+    f.reviewedAt = now;
+    f.reviewedBy = who;
+    f.finishedAt = now;
+    f.current = -1;
+    f.reviewer = '';
+    pushFlowHistory(f, 'APPROVED', opinion);
+
+    var productId = '';
+    if (f.type === 'PRODUCT_REVIEW') {
+      var t2 = getTask(f.targetId);
+      if (t2) {
+        t2.status = 'DONE';
+        t2.paused = false;
+        t2.finishedAt = now;
+        var words = 0;
+        var chapters = composeOf(t2.id).chapters || {};
+        (outlineOf(t2.id).nodes || []).forEach(function (n) {
+          var ch = chapters[n.id];
+          if (ch && String(ch.text || '').trim()) words += wordCount(ch.text);
+        });
+        var pr = addProduct({
+          taskId: t2.id, title: t2.topicName, type: t2.type,
+          compiledBy: (App.mock.ORG && App.mock.ORG.name) || '市档案馆',
+          words: words,
+          summary: String((t2.note || '') + '　（由编研任务 ' + t2.id + ' 成果发布审核通过后自动生成）').trim(),
+          security: '公开', formats: ['PDF', 'OFD']
+        });
+        productId = (pr && pr.product) ? pr.product.id : '';
+        f.productId = productId;
+        t2.published = true;
+        t2.publishedAt = now;
+        t2.productId = productId;
+        t2.stage = taskStages().length;
+        rememberProgress(t2);
+      }
+      saveTasks();
+      /* 评审要求：成果发布审核流程走完后，四类材料自动归档到「材料归档」并与编研任务关联 */
+      autoArchiveProduct(f.targetId, (pr && pr.product) || productOfTask(f.targetId), f);
+    } else {
+      var tp = getTopic(f.targetId);
+      if (tp && tp.review) {
+        tp.review.status = 'APPROVED';
+        tp.review.reviewedAt = now;
+        tp.review.reviewedBy = who;
+        tp.updatedAt = now;
+        saveTopics();
+      }
+    }
+    pushMessage({
+      to: f.by,
+      title: (f.type === 'PRODUCT_REVIEW' ? '成果发布审核通过：' : '选题立项审核通过：') + f.targetName,
+      body: '流程 ' + f.flowNo + '　全部环节通过' +
+        (productId ? '，成果已推送到「编研成果」模块（' + productId + '），任务已锁定为只读' : ''),
+      kind: f.type === 'PRODUCT_REVIEW' ? 'publish-approved' : 'topic-approved',
+      taskId: f.type === 'PRODUCT_REVIEW' ? f.targetId : '',
+      flowNo: f.flowNo
+    });
+    saveFlows();
+    notify();
+    return { ok: true, approved: true, productId: productId,
+      message: f.type === 'PRODUCT_REVIEW'
+        ? ('全部环节通过：成果已生成到「编研成果」模块' + (productId ? '（' + productId + '）' : '') + '，任务已锁定')
+        : '全部环节通过：选题立项审核通过' };
+  }
+
+  /** 流程审核页用的列表：只要与我有关（我发起 / 待我审核 / 我审过）就出现 */
+  function flowsForUser(scope, type) {
+    var me = (state.user && state.user.name) || '';
+    return flows().filter(function (f) {
+      var steps = flowStepsOf(f);
+      var iDid = f.by === me || steps.some(function (s) {
+        return s.by === me || (s.reviewers || []).some(function (r) { return r.name === me; }) ||
+          s.reviewer === me;
+      });
+      if (!iDid && !(state.user && state.user.isAdmin)) return false;
+      if (type && f.type !== type) return false;
+      if (scope === 'mine' && f.by !== me) return false;
+      if (scope === 'todo' && !(f.status === 'REVIEWING' && f.reviewer === me)) return false;
+      if (scope === 'done' && f.status === 'REVIEWING') return false;
+      return true;
+    }).slice().reverse();
+  }
+
+  /** 我能否审这个流程（当前环节的审核人；admin 可代办） */
+  function canReviewFlowNow(f) {
+    if (!f || f.status !== 'REVIEWING') return false;
+    var me = state.user || {};
+    return !!me.isAdmin || f.reviewer === me.name;
+  }
+
+  /** 选题发起《编研选题立项审核》 */
+  function submitTopicReview(id, note) {
+    var t = getTopic(id);
+    if (!t) return { ok: false, message: '选题不存在' };
+    if (t.status !== 'NOT_STARTED') {
+      return { ok: false, message: '状态为「' + ((App.mock.TOPIC_STATUS[t.status] || {}).label || t.status) + '」，不再需要立项审核' };
+    }
+    if (t.review && t.review.status === 'REVIEWING') {
+      return { ok: false, message: '该选题已有审核中的流程（' + t.review.flowNo + '）' };
+    }
+    var f = startFlow('TOPIC_REVIEW', { id: t.id, name: t.name },
+      { submitOpinion: String(note || '').trim() });
+    var cur = flowCurrentStep(f);
+    t.review = { flowNo: f.flowNo, at: f.at, by: f.by, reviewer: f.reviewer, status: 'REVIEWING' };
+    t.updatedAt = f.at;
     saveTopics();
     notify();
-    return { ok: true, message: '已发起成果审核，流程编号 ' + flow.flowNo + '，审核人 ' + reviewer, flowNo: flow.flowNo };
+    return { ok: true, flowNo: f.flowNo,
+      message: '已发起立项审核（流程 ' + f.flowNo + '），审核消息已推送给「' +
+        (cur ? cur.name + ' · ' + cur.reviewer : '—') + '」' };
   }
 
   /** 审批流程：通过/不通过都回写到来源对象 */
@@ -1698,6 +3202,7 @@
       // 已登录过则恢复会话，刷新页面不掉线
       if (u && !u.locked) state.user = u;
     }
+    readTaskProgress();          /* 先读"任务进展"覆盖层，后面 tasks() 会把它套上去 */
     if (!readUsers()) resetUsers();
     if (!readTopics()) resetTopics();
     if (!readTags()) resetTags();
@@ -1708,6 +3213,14 @@
     if (!readFlow()) resetFlow();
     if (!readDicts()) resetDicts();
     if (!readOutlines()) resetOutlines();
+    if (!readSelections()) resetSelections();
+    if (!readComposes()) resetComposes();
+    if (!readAuditRules()) resetAuditRules();
+    if (!readAuditResults()) state.auditResults = {};
+    if (!readMessages()) resetMessages();
+    if (!readPublish()) state.publish = {};
+    /* 已完成且已登记成果的任务：补齐"发布审核通过后应归档"的四类材料（幂等） */
+    syncPublishedArchives();
     return state;
   }
 
@@ -1752,9 +3265,72 @@
     moveOutlineNode: moveOutlineNode,
     setOutlineCollapsed: setOutlineCollapsed,
     resetOutlines: resetOutlines,
+    /* 第 2 阶段「确定选材」 */
+    selectionOf: selectionOf,
+    addSelections: addSelections,
+    removeSelections: removeSelections,
+    scopeText: scopeText,
+    pagesText: pagesText,
+    resetSelections: resetSelections,
+    /* 审核规则（系统管理） */
+    auditRules: auditRules,
+    auditRuleTypes: auditRuleTypes,
+    auditControlFlags: auditControlFlags,
+    controlFlagTitle: controlFlagTitle,
+    getAuditRule: getAuditRule,
+    auditRuleClauses: auditRuleClauses,
+    addAuditRule: addAuditRule,
+    updateAuditRule: updateAuditRule,
+    deleteAuditRules: deleteAuditRules,
+    resetAuditRules: resetAuditRules,
+    /* 审核校定（第 4 阶段） */
+    auditOf: auditOf,
+    saveAuditRun: saveAuditRun,
+    auditItems: auditItems,
+    auditItemKey: auditItemKey,
+    pendingAuditItems: pendingAuditItems,
+    replaceFragment: replaceFragment,
+    fixAuditItem: fixAuditItem,
+    markAuditFixed: markAuditFixed,
+    ignoreAuditItem: ignoreAuditItem,
+    resetAudit: resetAudit,
+    auditSummary: auditSummary,
+    /* 消息中心 */
+    messages: messages,
+    myMessages: myMessages,
+    messageOf: messageOf,
+    pushMessage: pushMessage,
+    readMessage: readMessage,
+    unreadMessageCount: unreadMessageCount,
+    resetMessages: resetMessages,
+    /* 成果发布（第 5 阶段） */
+    publishOf: publishOf,
+    flowView: flowView,
+    /* 多步流程引擎（选题立项审核 / 编研成果审核） */
+    startFlow: startFlow,
+    reviewFlowStep: reviewFlowStep,
+    reviewStepByFlowNo: reviewStepByFlowNo,
+    flowsForUser: flowsForUser,
+    flowStepsOf: flowStepsOf,
+    flowCurrentStep: flowCurrentStep,
+    canReviewFlowNow: canReviewFlowNow,
+    isTaskLocked: isTaskLocked,
+    startPublishReview: startPublishReview,
+    reviewPublishStep: reviewPublishStep,
+    reviewFormOf: reviewFormOf,
+    resetPublish: resetPublish,
+    /* 第 3 阶段「加工编排」 */
+    composeOf: composeOf,
+    chapterOf: chapterOf,
+    saveChapter: saveChapter,
+    composeStats: composeStats,
+    wordCount: wordCount,
+    resetCompose: resetCompose,
+    resetComposes: resetComposes,
 
     /* 素材标签 */
     tags: tags,
+    tagsWithUsage: tagsWithUsage,
     getTag: getTag,
     addTag: addTag,
     updateTag: updateTag,
@@ -1769,6 +3345,11 @@
     getMaterial: getMaterial,
     hasMaterial: hasMaterial,
     addMaterials: addMaterials,
+    addMaterial: addMaterial,
+    catalogByArchiveNo: catalogByArchiveNo,
+    hasMaterialTitle: hasMaterialTitle,
+    fondsOfArchiveNo: fondsOfArchiveNo,
+    yearOfArchiveNo: yearOfArchiveNo,
     deleteMaterials: deleteMaterials,
     updateMaterialTags: updateMaterialTags,
     resetLibrary: function () { resetMaterials(); resetTags(); notify(); },
@@ -1783,6 +3364,7 @@
     pauseTask: pauseTask,
     resumeTask: resumeTask,
     advanceStage: advanceStage,
+    setTaskStage: setTaskStage,
     backStage: backStage,
     taskStages: taskStages,
     stageDef: stageDef,
@@ -1790,6 +3372,10 @@
     taskMatchesState: taskMatchesState,
     isTaskDone: isTaskDone,
     resetTasks: resetTasks,
+    rememberProgress: rememberProgress,
+    clearTaskProgress: clearTaskProgress,
+    reseeded: function () { return !!state.reseeded; },
+    taskProgress: function () { return state.taskProgress || {}; },
 
     /* 编研成果 */
     products: products,
@@ -1802,7 +3388,16 @@
 
     /* 材料归档 */
     archiveItems: archiveItems,
+    archiveItemOf: archiveItemOf,
     archiveOfTask: archiveOfTask,
+    addArchiveItem: addArchiveItem,
+    updateArchiveItem: updateArchiveItem,
+    deleteArchiveItems: deleteArchiveItems,
+    archiveStageChoices: archiveStageChoices,
+    autoArchiveProduct: autoArchiveProduct,
+    syncPublishedArchives: syncPublishedArchives,
+    autoArchiveOf: autoArchiveOf,
+    archiveCatalog: archiveCatalog,
     archiveCount: archiveCount,
     archiveCategories: archiveCategories,
     archiveFields: archiveFields,

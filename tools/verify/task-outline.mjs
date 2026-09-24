@@ -108,9 +108,23 @@ let exitCode = 0;
 
 async function snap() { return page.evaluate(SNAP); }
 
-async function gotoTask(id) {
+/** 只导航到任务详情页（默认显示任务**当前阶段**的工作界面） */
+async function gotoTaskRaw(id) {
   await page.evaluate("location.hash = '#/task/" + id + "'; return 1;");
-  await sleep(320);
+  await sleep(340);
+}
+
+/**
+ * 导航到任务并**切到第 1 阶段**：RW-2026-001 现在停在「确定选材」，
+ * 生成大纲的界面要点进度条上的第 1 步才显示（本套件测的就是它）。
+ */
+async function gotoTask(id) {
+  await gotoTaskRaw(id);
+  await page.evaluate(`
+    var b = document.querySelector('#main .stage-stepper [data-stage="1"]');
+    if (b) b.click();
+    return 1;`);
+  await sleep(360);
 }
 
 /** 用真实鼠标点一个元素（按选择器） */
@@ -208,6 +222,19 @@ try {
 
   /* ================================================== B. 初始态 */
   console.log('\n【B】初始状态');
+  /* 种子大纲：RW-2026-001 已经推进到第 2/3 阶段，按第 1 阶段门禁「大纲已确认」它本来就该有 */
+  check('种子数据里第 1 阶段已有大纲（21 个标题，来自与「AI生成大纲」同一个生成器）',
+    s.nodes.length === 21 && s.tags.some(function (t) { return t.indexOf('共 21 个标题') === 0; }),
+    s.nodes.length + ' 个标题；标签「' +
+      s.tags.filter(function (t) { return t.indexOf('共 ') === 0; })[0] + '」');
+
+  /* 清空回到"还没生成"的初始态，下面按首次生成的路径继续测 */
+  await page.evaluate(`
+    App.store.clearOutline('${TASK}');
+    return 1;`);
+  await sleep(350);
+  s = await snap();
+  check('清空大纲后回到初始态（空状态 + 未生成标签）', s.nodes.length === 0, s.nodes.length + ' 个标题');
   check('右侧初始为空状态，给出下一步引导', s.nodes.length === 0 &&
     s.emptyText.indexOf('右侧还没有大纲') >= 0 && s.emptyText.indexOf('AI生成大纲') >= 0,
     s.emptyText.replace(/\s+/g, ' ').slice(0, 60));
@@ -562,21 +589,30 @@ try {
     function pick(f) { var t = ts.filter(f)[0]; return t ? { id: t.id, stage: t.stage,
       title: (App.store.stageDef(t.stage) || {}).title || '' } : null; }
     return {
-      other: pick(function (t) { return t.status === 'IN_PROGRESS' && !t.paused && t.stage !== 1; }),
+      /* 挑一个"停在还没有工作界面的阶段"的在建任务（第 1、2 阶段都已交付） */
+      /* 第 1/2/3/4 阶段的工作界面都已交付，所以"还没有界面"的任务要挑第 5 阶段（成果发布） */
+      other: pick(function (t) { return t.status === 'IN_PROGRESS' && !t.paused && t.stage > 4; }),
       fresh: pick(function (t) { return t.status === 'NOT_STARTED'; }),
       done: pick(function (t) { return t.status === 'DONE'; })
     };
   `);
   const cases = [
-    ['其他在建任务', others.other, '第 ' + others.other.stage + ' 阶段「' + others.other.title + '」的工作界面尚未生成'],
+    /* 5 个阶段的工作界面都已交付：停在第 5 阶段的在建任务显示「成果发布」面板 */
+    ['其他在建任务', others.other, '成果发布'],
     ['未开始的任务', others.fresh, '任务尚未启动'],
-    ['已完成的任务', others.done, '第 ' + others.done.stage + ' 阶段「' + others.done.title + '」的工作界面尚未生成']
+    /* 已完成的任务：成果发布面板 + 只读 */
+    ['已完成的任务', others.done, '成果发布']
   ];
   for (const [label, target, expect] of cases) {
-    await gotoTask(target.id);
-    const o = await snap();
-    check(label + '（' + target.id + '）：给出阶段说明，不显示生成大纲界面',
-      !o.hasStep && o.note.indexOf(expect) >= 0, o.note.replace(/\s+/g, ' ').slice(0, 56));
+    await gotoTaskRaw(target.id);          // 这一段看的是"任务当前阶段"的默认界面
+    const o = await page.evaluate(`
+      var m = document.getElementById('main');
+      return { hasOutline: !!m.querySelector('.outline-step'),
+        publish: !!m.querySelector('.pb-card'),
+        text: m.textContent.replace(/\s+/g, ' ') };`);
+    check(label + '（' + target.id + '）：不显示第 1 阶段的大纲界面，当前阶段有对应工作界面（' + expect + '）',
+      !o.hasOutline && o.text.indexOf(expect) >= 0,
+      '大纲界面=' + o.hasOutline + '；含「' + expect + '」=' + (o.text.indexOf(expect) >= 0));
   }
 
   /* ================================================== K. 全部折叠 / 全部展开 */

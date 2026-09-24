@@ -13,7 +13,7 @@
         见 renderDetail 上方的说明）。
 
    原型的三个处理（都已在 README 标注）：
-     · 六阶段的工作界面（大纲/选材/编排/辅文/审校/发布）尚未生成，
+     · 五阶段的工作界面（大纲/选材/编排/审校/发布）尚未生成，
        阶段门的**产物校验暂不启用**，界面上明确标注"待该阶段界面生成后生效"；
        阶段详细工作界面沿用《原型功能模块规划》的七步原型（可一键打开对照）。
        ——骨架阶段这些说明随阶段面板一起撤下（renderDetailExtras 里保留原样）。
@@ -41,8 +41,10 @@
     /* 任务列表当前页码（从 1 开始）。筛选 / 搜索 / 重置都会回到第 1 页 */
     page: 1,
     /* 详情页里正在查看的阶段（默认跟随任务当前阶段） */
+    /* 已发布（锁定）任务允许"只读查看"任意环节：这时阶段是**视图**而不是进度，
+       所以单独一个 viewStage，不写回 store（任务进度永远是发布时停下的阶段） */
     viewStage: null,
-    /* 记住详情页当前是哪条任务：切换到别的任务时要把 viewStage 复位，
+    /* 记住详情页当前是哪条任务（阶段工作界面都跟着任务当前阶段走）
        否则直接改 hash 跳到任务 B 会沿用任务 A 正在查看的阶段 */
     viewTaskId: null
   };
@@ -248,29 +250,58 @@
      task:publish / task:archive 这些动作当前**没有入口**，但注册保留着，
      步骤界面接回来时直接可用（任务列表页的启动/暂停/删除/修改不受影响）。 */
 
-  /** 六阶段进度条：静态展示，phase 由任务状态与当前阶段算出 */
+  /**
+   * 五阶段进度条。
+   *
+   * 点某个环节＝**把任务的进展停在这个环节上**（评审要求）：当前环节及以前的可以点回去，
+   * 下一环可以点着往前推进；**再往后的环节不能跳过下一环去点** —— 这些步骤渲染成
+   * "置灰 + 语义禁用"（aria-disabled），点它只给一句说明，进度不动。
+   * 后面的环节状态自然都回到「未开始」（进度只由 t.stage 决定）。
+   */
   function renderStepper(t) {
     var done = t.status === 'DONE';
+    var started = t.status !== 'NOT_STARTED';
+    var taskLocked = S.isTaskLocked(t.id);
+    /* 已发布任务：每个环节都可以点开只读查看；否则最多只能点到"下一个环节" */
+    var view = (taskLocked && state.viewStage) ? state.viewStage : t.stage;
+    var maxReach = taskLocked ? S.taskStages().length : t.stage + 1;
     var items = S.taskStages().map(function (s) {
       var pos = 'pending';
       if (done || s.index < t.stage) pos = 'done';
       else if (s.index === t.stage) pos = (t.status === 'IN_PROGRESS' ? 'current' : 'pending');
+      /* 未启动的任务：点环节不能替它"启动"，全部锁住（与「⋮→启动」的门禁一致） */
+      var locked = !started || s.index > maxReach;
+      var viewing = taskLocked && s.index === view;
+      var cls = 'step ' + pos + (locked ? ' locked' : '') + (viewing ? ' viewing' : '');
       var dot = (pos === 'done') ? icon('check') : String(s.index);
       var desc = pos === 'done' ? '已完成'
         : (pos === 'current' ? (t.paused ? '已暂停' : '进行中') : '未开始');
-      return '<div class="step ' + pos + '"' + (pos === 'current' ? ' aria-current="step"' : '') + '>' +
+      var tip = taskLocked
+        ? '任务已发布：只读查看第 ' + s.index + ' 阶段'
+        : (locked
+        ? (!started
+          ? '任务尚未启动，请先在任务卡片的「⋮」菜单里点「启动」'
+          : '不能跳过第 ' + maxReach + ' 阶段「' + esc((S.stageDef(maxReach) || {}).title || '') +
+            '」——请按顺序推进')
+        : (s.index < t.stage ? '把进展退回第 ' + s.index + ' 阶段'
+          : (s.index === t.stage ? '当前所处阶段' : '把进展推进到第 ' + s.index + ' 阶段')));
+      return '<button type="button" class="' + cls + '" data-action="task:stage" ' +
+        'data-id="' + esc(t.id) + '" data-stage="' + s.index + '" ' +
+        'title="' + tip + '" ' +
+        (locked ? 'aria-disabled="true" ' : '') +
+        'aria-current="' + (s.index === t.stage && t.status === 'IN_PROGRESS' && !t.paused ? 'step' : 'false') + '">' +
         '<span class="step-dot">' + dot + '</span>' +
         '<span class="step-title">' + esc(s.title) + '</span>' +
         '<span class="step-desc">' + esc(desc) + '</span>' +
-      '</div>';
+      '</button>';
     }).join('');
 
-    return '<nav class="stage-stepper is-static" aria-label="编研任务六阶段进度">' +
+    return '<nav class="stage-stepper" aria-label="编研任务五阶段进度">' +
       '<div class="steps">' + items + '</div></nav>';
   }
 
-  function renderStagePanel(t, viewStage) {
-    var s = S.stageDef(viewStage);
+  function renderStagePanel(t) {
+    var s = S.stageDef(t.stage);
     if (!s) return '';
     var done = t.status === 'DONE' || s.index < t.stage;
     var isCurrent = !done && s.index === t.stage && t.status === 'IN_PROGRESS';
@@ -296,7 +327,7 @@
         (s.key === 'REVIEW' ? reviewBlock(t) : '') +
         (s.key === 'PUBLISH' ? publishBlock(t) : '') +
         '<div class="data-note" style="margin-top:var(--s3)">' + icon('info') +
-          '<span>本阶段的工作界面（大纲编辑、选材、编排、辅文、审校、发布）尚未在本原型生成。' +
+          '<span>本阶段的工作界面（大纲编辑、选材、编排、审校、发布）尚未在本原型生成。' +
           '按设计文档「暂时与目前原型中的一致」，详细工作界面参照《原型功能模块规划》的七步原型' +
           '（该七步原型实现已归档删除，七步目标 / 产物 / 门禁口径见 README 的「七步原型对照」摘要）；' +
           '当前共 6 阶段，选题已上移到「选题立项」模块。</span>' +
@@ -316,11 +347,11 @@
     var d = f ? (App.mock.REVIEW_FLOW_STATUS[f.status] || { label: f.status, tag: '' }) : null;
 
     if (!f) {
-      var canSubmit = t.status === 'IN_PROGRESS' && !t.paused && t.stage >= 5;
+      var canSubmit = t.status === 'IN_PROGRESS' && !t.paused && t.stage >= 4;
       var reason = '';
       if (t.status === 'NOT_STARTED') reason = '任务尚未启动';
       else if (t.paused) reason = '任务已暂停，请先继续';
-      else if (t.stage < 5) reason = '尚未推进到第 5 阶段';
+      else if (t.stage < 4) reason = '尚未推进到第 4 阶段「审核校定」';
       return '<div class="ai-block">' +
         '<div class="ai-block-head"><span>编研成果审核校定流程</span>' +
           '<span class="spacer"></span>' +
@@ -533,25 +564,62 @@
     '</div></section>';
   }
 
+  /* 已经做好工作界面的阶段：1 生成大纲、2 确定选材；
+     3 加工编排是**全屏工作台**（三栏），行内只放一个入口卡片 */
+  function stageImpl(t, stage) {
+    if (stage === 1 && App.taskOutline) return App.taskOutline.render(t);
+    if (stage === 2 && App.taskSelection) return App.taskSelection.render(t);
+    /* 第 4 阶段「审核校定」：三类审核（政治性 / 专业性 / 合规性），结果分列 + 支持改片段 */
+    if (stage === 4 && App.taskReview) return App.taskReview.render(t);
+    /* 第 5 阶段「成果发布」：发起审核 → 逐级推送审核消息 → 通过后生成成果并锁定任务 */
+    if (stage === 5 && App.taskPublish) return App.taskPublish.render(t);
+    if (stage === 3 && App.taskCompose) {
+      return '<section class="card compose-entry"><div class="card-body">' +
+        '<div class="data-note">' + icon('info') +
+          '<span>第 3 阶段「加工编排」是一个<b>全屏工作台</b>：左侧大纲导航（占 20%）、中间素材区、' +
+          '右侧编排区，顶部有「预览 / 保存」。点进度条上的<b>「加工编排」</b>即可全屏打开。</span>' +
+        '</div>' +
+        '<div class="hstack" style="margin-top:var(--s3)">' +
+          '<button type="button" class="btn btn-primary" data-action="compose:open" ' +
+            'data-id="' + esc(t.id) + '">' + icon('layers') + '打开加工编排工作台</button>' +
+        '</div>' +
+      '</div></section>';
+    }
+    return '';
+  }
+
+  /**
+   * 进度条下面那块：显示**任务当前阶段**的工作界面。
+   * 点进度条＝把进展停到那个阶段，所以这里永远只画当前阶段，不再有"正在查看别的阶段"。
+   */
   function renderStepPanel(t) {
-    var stage = S.stageDef(t.stage) || { title: '' };
+    var taskLocked = S.isTaskLocked(t.id);
+    /* 已发布任务：阶段是"视图"而不是进度 —— 可以逐个环节只读查看（评审要求：能看、不能改） */
+    var view = (taskLocked && state.viewStage) ? state.viewStage : t.stage;
+    var stage = S.stageDef(view) || { title: '' };
+    var note = taskLocked ? stepNote('任务成果已发布，本环节为**只读**：可以查看已有信息，不能再修改' +
+      '（如需修改，须先撤回发布）。' +
+      (view !== t.stage ? '当前正在查看第 ' + view + ' 阶段，任务进度仍停在第 ' + t.stage + ' 阶段。' : '')) : '';
     if (t.status === 'NOT_STARTED') {
       return stepNote('任务尚未启动。请先在任务卡片的「⋮」菜单里点「启动」，再进入阶段工作界面。');
     }
-    if (t.paused) {
+    if (t.paused && !taskLocked) {
       return stepNote('任务已暂停（当前在第 ' + t.stage + ' 阶段「' + esc(stage.title) +
         '」）。请先在任务卡片的「⋮」菜单里点「继续」。');
     }
-    if (t.stage === 1 && App.taskOutline) return App.taskOutline.render(t);
-    return stepNote('第 ' + t.stage + ' 阶段「' + esc(stage.title) +
-      '」的工作界面尚未生成（6 个步骤界面正在逐个定稿，当前先交付第 1 阶段「生成大纲」）。');
+    var impl = stageImpl(t, view);
+    if (impl) return note + impl;
+    return stepNote('第 ' + view + ' 阶段「' + esc(stage.title) + '」的工作界面尚未生成。');
   }
+
 
   /**
    * 详情页骨架（本轮唯一渲染的内容）
    * 一行标题 + 最右端的返回按钮，下面一条六阶段进度条；除此之外不放任何东西。
    */
   function renderDetail(t) {
+    state.viewTaskId = t.id;
+
     return '' +
       '<section class="card">' +
         '<div class="card-head detail-head">' +
@@ -574,12 +642,8 @@
    * 本函数继续留着放还没做的那部分。
    */
   function renderDetailExtras(t) {
-    if (state.viewTaskId !== t.id) {
-      state.viewTaskId = t.id;
-      state.viewStage = null;
-    }
-    var viewStage = state.viewStage || t.stage;
-    if (viewStage < 1 || viewStage > S.taskStages().length) viewStage = t.stage;
+    state.viewTaskId = t.id;
+    var stage = t.stage;
     var d = taskState(t);
 
     var team = App.mock.TASK_TEAM_ROLES.map(function (r) {
@@ -633,7 +697,7 @@
         '</div>' +
       '</section>' +
 
-      renderStagePanel(t, viewStage) +
+      renderStagePanel(t, stage) +
 
       '<div class="split-grid" style="margin-top:var(--gap)">' +
         '<section class="card">' +
@@ -771,7 +835,7 @@
       /* 新任务插在列表最前面（store 用 unshift），所以要回到第 1 页才看得到它。
          ⚠️ 必须在 S.addTask() **之前**改 state.page —— addTask 内部会 notify()，
          同步触发一次渲染，之后再改页码那一次渲染已经用旧页码画完了。
-         （和 doAdvance 里"先清空 viewStage 再调 store"是同一个坑） */
+         （和 doAdvance 里"先算好再调 store"是同一个坑） */
       state.page = 1;
       var t = S.addTask(data);
       U.toast('已创建编研任务 ' + t.id + '（未开始，可在卡片菜单中启动）', 'ok');
@@ -830,18 +894,19 @@
       okText: isLast ? '确认完成' : '进入下一阶段'
     }).then(function (ok) {
       if (!ok) return;
-      /* 必须**先**清空 viewStage 再调 store：store 的 notify() 会同步触发一次渲染，
-         若在其后再清空，那一次渲染用的还是旧值，阶段面板会停在旧阶段，
-         而"进入下一阶段/回退"按钮只在当前阶段显示 —— 用户会以为功能没了。 */
-      state.viewStage = null;
       var r = S.advanceStage(task.id);
       U.toast(r.message, r.ok ? 'ok' : 'warn');
     });
   }
 
   function register() {
-    /* 第 1 阶段「生成大纲」的动作注册（实现在 task-outline.js） */
+    /* 各阶段工作界面的动作注册（实现在 task-outline.js / task-selection.js） */
     if (App.taskOutline && App.taskOutline.register) App.taskOutline.register();
+    if (App.taskSelection && App.taskSelection.register) App.taskSelection.register();
+    if (App.taskCompose && App.taskCompose.register) App.taskCompose.register();
+    if (App.taskReview && App.taskReview.register) App.taskReview.register();
+    if (App.taskPublish && App.taskPublish.register) App.taskPublish.register();
+    if (App.messages && App.messages.register) App.messages.register();
 
     U.register('task:new', function () { openForm(null); });
     U.register('task:edit', function (ds) {
@@ -858,16 +923,43 @@
 
     U.register('task:open', function (ds) {
       U.closeMenus();
-      state.viewStage = null;
       App.router.navigate('#/task/' + ds.id);
     });
     U.register('task:list', function () {
-      state.viewStage = null;
       App.router.navigate('#/task');
     });
     U.register('task:stage', function (ds) {
-      state.viewStage = parseInt(ds.stage, 10);
-      App.app.render();
+      var t = S.getTask(ds.id);
+      if (!t) return;
+      var target = parseInt(ds.stage, 10) || 1;
+
+      /* 已发布任务：点环节＝**只读查看**该环节（不改进度），满足"可以查看每个环节的已有信息" */
+      if (S.isTaskLocked(t.id)) {
+        state.viewStage = target;
+        App.app.render();
+        U.toast('任务已发布：第 ' + target + ' 阶段「' + ((S.stageDef(target) || {}).title || '') +
+          '」为只读查看', 'ok');
+        return;
+      }
+
+      /* 未启动的任务：不让"点环节"替它启动（要走「⋮→启动」） */
+      if (t.status === 'NOT_STARTED') {
+        U.toast('任务尚未启动，请先在任务卡片的「⋮」菜单里点「启动」', 'warn');
+        return;
+      }
+
+      /* 不能跳过下一环：当前在第 M 阶段时，最多只能点到第 M+1 阶段 */
+      if (target > t.stage + 1) {
+        var next = S.stageDef(t.stage + 1) || { title: '' };
+        U.toast('不能跳过第 ' + (t.stage + 1) + ' 阶段「' + next.title + '」——请按顺序推进', 'warn');
+        return;
+      }
+
+      /* 点环节＝把任务进展停在这一环（后面的环节回到未开始），由 store 落库并整页重渲染 */
+      var r = S.setTaskStage(t.id, target);
+      U.toast(r.message, r.ok ? 'ok' : 'warn');
+      /* 第 3 阶段没有行内工作界面：停到这一阶段的同时直接全屏打开工作台 */
+      if (target === 3 && App.taskCompose) App.taskCompose.open(t.id);
     });
     U.register('task:advance', function (ds) { doAdvance(S.getTask(ds.id)); });
     U.register('task:submit-review', function (ds) {
@@ -903,7 +995,7 @@
         okText: '确认回退'
       }).then(function (ok) {
         if (!ok) return;
-        state.viewStage = null;   // 同上：先清空，再让 store 触发渲染
+        /* 同 doAdvance：先算好要渲染的东西，再调 store（它的 notify 会同步重渲染） */
         var r = S.backStage(t.id);
         U.toast(r.message, r.ok ? 'ok' : 'warn');
       });
@@ -969,10 +1061,13 @@
       return renderList();
     },
     register: register,
-    /* 大纲界面里的标题/内容说明是输入框：全站重渲染后要重新绑定它们的
-       input / change 事件（见 task-outline.js 顶部说明） */
+    /* 阶段工作界面里的事件绑定（大纲的输入框、选材库的勾选等）：
+       全站重渲染后要重新挂一遍，见 task-outline.js / task-selection.js 顶部说明 */
     mount: function (root) {
       if (App.taskOutline && App.taskOutline.mount) App.taskOutline.mount(root);
+      var step = root.querySelector('.sel-step[data-task]');
+      var t = step ? S.getTask(step.getAttribute('data-task')) : null;
+      if (App.taskSelection && App.taskSelection.mount && t) App.taskSelection.mount(root, t);
     },
     crumb: crumb,
     pageClass: 'page-compact'
