@@ -5,7 +5,7 @@
      · 审核规则模块放在「归档设置」下，原型与数据对齐参照系统（敏感内容管理）
      · 政治性审核：依托规则，命中要显示"规则标题 + 命中内容"
      · 专业性审核：不依赖规则（错别字 / 纪年 / 规范表述），错别字可 AI 自动修改并显示修改信息
-     · 合规性审核：隐私由模型识别 + 不宜公开依托规则
+     · 合规性审核：**不依赖审核规则** —— 模型判定知识产权风险 + 个人隐私及个人信息
      · 三类结果单独列出，且支持修改内容片段
 
    运行：node tools/verify/audit.mjs [file:///.../index.html]
@@ -74,6 +74,15 @@ const RV = `
       function (t) { return t.textContent.trim(); }),
     cards: Array.prototype.map.call(main.querySelectorAll('.rv-card'), function (c) {
       return c.querySelector('.card-head span').textContent.trim(); }),
+    /* 评审要求：三类不再各自审核，只保留顶部一个入口 */
+    kindRunBtns: main.querySelectorAll('[data-action="audit:run"]').length,
+    runAllBtns: main.querySelectorAll('[data-action="audit:run-all"]').length,
+    kindHeadBtns: Array.prototype.map.call(main.querySelectorAll('.rv-card .card-head button'),
+      function (b) { return b.textContent.trim(); }),
+    runInfo: Array.prototype.map.call(main.querySelectorAll('.rv-run-info'),
+      function (x) { return x.textContent.replace(/\s+/g, ' ').trim(); }),
+    cardNotes: Array.prototype.map.call(main.querySelectorAll('.rv-card .data-note'), function (x) {
+      return x.textContent.replace(/\s+/g, ' ').trim(); }),
     political: card('political') ? {
       tag: (card('political').querySelector('.card-head .tag') || {}).textContent || '',
       items: card('political').querySelectorAll('.rv-item').length,
@@ -100,8 +109,12 @@ const RV = `
       items: card('compliance').querySelectorAll('.rv-item').length,
       titles: Array.prototype.map.call(card('compliance').querySelectorAll('.rv-item-title'),
         function (t) { return t.textContent.trim(); }),
+      /* 合规性不再依托审核规则：这两处应当是 0 */
       ruleLines: Array.prototype.map.call(card('compliance').querySelectorAll('.rv-rule'),
         function (r) { return r.textContent.replace(/\\s+/g, ' ').trim(); }),
+      basis: (card('compliance').querySelector('.rv-basis') || {}).textContent || '',
+      details: Array.prototype.map.call(card('compliance').querySelectorAll('.rv-detail'),
+        function (x) { return x.textContent.replace(/\\s+/g, ' ').trim(); }),
       autofix: card('compliance').querySelectorAll('[data-action="audit:autofix"]').length
     } : null,
     fixRows: main.querySelectorAll('.rv-fix-table tbody tr').length,
@@ -298,7 +311,8 @@ try {
   const delDlg = await page.evaluate(`
     var m = document.querySelector('.modal');
     return m ? m.querySelector('.modal-head').textContent.trim() : '';`);
-  check('删除前二次确认（写明会影响哪两类审核）', delDlg.indexOf('删除选中的 1 条审核规则') === 0, delDlg);
+  check('删除前二次确认（写明只影响政治性审核：合规性审核不依赖规则）',
+    delDlg.indexOf('删除选中的 1 条审核规则') === 0, delDlg);
   await click('.modal [data-action="ui:ok"]');
   await sleep(400);
   const afterDel = await page.evaluate(`
@@ -312,20 +326,28 @@ try {
   console.log('\n【B】第 4 阶段「审核校定」：三类审核分列');
   await openReview();
   let rv = await page.evaluate(RV);
-  check('点第 4 阶段：进入「审核校定」，三类审核各一张卡片（尚未审核）',
+  check('三类审核**不再各自单独审核**：卡片里没有审核按钮（只有展开 / 收起），只有顶部「一键全部审核」一个入口',
+    rv.kindRunBtns === 0 && rv.runAllBtns === 1 &&
+    rv.kindHeadBtns.every(function (b) { return b === '展开' || b === '收起'; }),
+    '卡片内审核按钮 ' + rv.kindRunBtns + ' 个；顶部一键按钮 ' + rv.runAllBtns + ' 个；卡片头部按钮：' +
+    (rv.kindHeadBtns.join('、') || '（无）'));
+  check('点第 4 阶段：进入「审核校定」，三类审核各一张卡片，且**一打开就有默认审核结果**（不再显示"尚未审核"）',
     rv.stage === 4 && rv.cards.length === 3 &&
     rv.cards.join() === '政治性审核,专业性审核,合规性审核' &&
-    rv.badges.filter(function (b) { return b.indexOf('未审核') > 0; }).length === 3,
+    rv.badges.filter(function (b) { return b.indexOf('未审核') > 0; }).length === 0 &&
+    rv.badges.filter(function (b) { return b.indexOf('待处理') > 0; }).length === 3,
     rv.cards.join(' / ') + '；状态：' + rv.badges.join('，'));
 
-  await clearToasts();
-  await click('[data-action="audit:run-all"]');
-  await sleep(700);
+  /* 默认审核结果**写在代码里**（mock.AUDIT_RESULTS）：不用先点一键审核，进来就有；
+     这里只读页面，不点任何按钮 */
   rv = await page.evaluate(RV);
-  check('一键全部审核：三类都跑出结果，汇总按状态显示（未校定 / 已校定 / 已忽略）',
+  check('默认审核结果：三类命中项都已列出，顶部汇总按状态显示（未校定 / 已校定 / 已忽略），并标出审核人 / 时间',
     rv.political.items >= 2 && rv.professional.items >= 3 && rv.compliance.items >= 3 &&
     rv.ops.indexOf('共命中') >= 0 && rv.ops.indexOf('未校定') >= 0 &&
-    rv.ops.indexOf('已校定') >= 0 && rv.ops.indexOf('已忽略') >= 0,
+    rv.ops.indexOf('已校定') >= 0 && rv.ops.indexOf('已忽略') >= 0 &&
+    rv.runInfo.length === 3 && rv.runInfo.join(' ').indexOf('本地模拟 AI') >= 0 &&
+    rv.runInfo.join(' ').indexOf('默认审核结果（种子数据）') >= 0 &&
+    rv.runInfo.join(' ').indexOf('李文华') >= 0,
     rv.ops + '｜政治性 ' + rv.political.items + ' 项 / 专业性 ' + rv.professional.items +
     ' 项 / 合规性 ' + rv.compliance.items + ' 项');
 
@@ -407,11 +429,19 @@ try {
     rv.professional.titles.length + ' 类');
 
   /* 合规性审核 */
-  check('合规性审核：隐私由模型识别（身份证号 / 手机号），不宜公开内容显示命中规则',
+  check('合规性审核：不依赖审核规则（命中项里没有"命中规则"行，口径写明由模型判定）',
+    rv.compliance.ruleLines.length === 0 &&
+    rv.compliance.basis.indexOf('不依赖审核规则') >= 0 &&
+    rv.compliance.basis.indexOf('知识产权风险') > 0 &&
+    rv.compliance.basis.indexOf('个人隐私及个人信息') > 0,
+    '规则行 ' + rv.compliance.ruleLines.length + ' 条｜' + rv.compliance.basis.slice(0, 60));
+  check('合规性审核：个人隐私由模型识别（身份证号 / 手机号等），并给出脱敏建议（主面板不给按钮，与专业性一致）',
     rv.compliance.titles.filter(function (t) { return t.indexOf('（模型识别）') > 0; }).length >= 2 &&
-    rv.compliance.ruleLines.length >= 1 &&
-    rv.compliance.ruleLines[0].indexOf('个人信息类档案敏感内容') >= 0,
-    rv.compliance.titles.join('、'));
+    rv.compliance.titles.join(' ').indexOf('身份证号') >= 0 &&
+    rv.compliance.titles.join(' ').indexOf('手机号') >= 0 &&
+    rv.compliance.details.join(' ').indexOf('建议脱敏后再公开') >= 0 &&
+    rv.compliance.autofix === 0,
+    rv.compliance.titles.join('、') + '｜' + (rv.compliance.details[0] || '').slice(0, 40));
   const shotReview = await page.shot(SHOT_DIR + 'review-stage.png', { full: true });
 
   /* ================================================== C. 修改片段 + AI 自动修改 */
@@ -578,6 +608,8 @@ try {
           page: Math.floor(off / App.reviewCalibrate.PAGE_SIZE) + 1 });
       });
     });
+    /* 故意挑"不在第 1 页"的那一处：演示稿里第 2 页本来就有多处命中，
+       正好验证"点谁只标黄谁"（评审口径：只标黄当前定位的那一处） */
     var far = items.filter(function (x) { return x.page > 1; })[0] || items[items.length - 1];
     return far;`);
   await page.evaluate(`
@@ -821,13 +853,20 @@ try {
       (App.store.auditItems('${TASK}', k) || []).forEach(function (it) {
         all.push({ kind: k, status: it.status, text: it.text }); });
     });
+    var info = Array.prototype.map.call(document.querySelectorAll('.rv-run-info'), function (x) {
+      return x.textContent.replace(/\s+/g, ' ').trim(); }).join(' ');
     return { total: sum.total, open: sum.open,
+      info: info, seeded: sum.kinds.political.seeded,
       ignored: all.filter(function (x) { return x.status === 'ignored'; }).length,
       fixedTexts: all.filter(function (x) { return x.status === 'fixed'; }).map(function (x) { return x.text; }) };`);
   check('处理完之后重跑：新发现 0 项时**已有结果原样保留**（总数不翻倍、已忽略仍是已忽略）',
     afterRerun.total === beforeRerun.total && afterRerun.ignored >= 1 &&
     rerunToast.indexOf('新发现 0 项') >= 0 && rerunToast.indexOf('保留') >= 0,
     '轻提示：' + rerunToast + '；命中项 ' + beforeRerun.total + ' → ' + afterRerun.total);
+  check('用户自己重跑过之后：审核记录不再标成"默认审核结果"（改回"本次审核"，seeded 标记消失）',
+    afterRerun.seeded === false && afterRerun.info.indexOf('本次审核：') >= 0 &&
+    afterRerun.info.indexOf('默认审核结果') < 0,
+    'seeded=' + afterRerun.seeded + '；' + afterRerun.info.slice(0, 60));
 
   /* 再制造一个新问题（模拟又写了新内容）→ 重跑应该**追加**进来 */
   await page.evaluate(`
@@ -890,15 +929,136 @@ try {
     '版本 ' + reseed.version + '；章节 ' + reseed.chapters + '；带演示问题=' + reseed.hasDemo +
     '；审核规则 ' + reseed.rules + ' 条；旧正文残留=' + reseed.staleText);
 
-  /* 用重新播种后的数据，再确认三类审核都能发现问题（用户报过"三类都是未发现问题"） */
+  /* 用重新播种后的数据，确认**默认审核结果**跟着种子一起重建（用户报过"三类都是未发现问题"） */
   await openReview();
-  await click('[data-action="audit:run-all"]');
-  await sleep(800);
   rv = await page.evaluate(RV);
-  check('重新播种后，三类审核**都能发现问题**（不是"未发现问题"）',
-    rv.political.items > 0 && rv.professional.items > 0 && rv.compliance.items > 0,
+  const rebuild = await page.evaluate(`
+    var sum = App.store.auditSummary('${TASK}');
+    return { total: sum.total, open: sum.open, fixes: sum.fixes,
+      at: sum.kinds.political.at, by: sum.kinds.political.by,
+      misses: App.store.auditSeedMisses() };`);
+  check('重新播种后，三类审核**都能发现问题**（默认审核结果按种子重新生成，不是"未发现问题"）',
+    rv.political.items > 0 && rv.professional.items > 0 && rv.compliance.items > 0 &&
+    rebuild.total === 14 && rebuild.open === 14 && rebuild.fixes === 0 &&
+    rebuild.at === '2026-05-16T10:05:00' && rebuild.by === '李文华' && rebuild.misses.length === 0,
     '政治性 ' + rv.political.items + ' 项 / 专业性 ' + rv.professional.items +
-    ' 项 / 合规性 ' + rv.compliance.items + ' 项');
+    ' 项 / 合规性 ' + rv.compliance.items + ' 项；审核记录 ' + rebuild.total + ' 项（' +
+    rebuild.by + ' ' + rebuild.at + '）；种子里没认上的项 ' + rebuild.misses.length);
+
+  /* 评审要求："这个数据不要丢失" —— 把浏览器里的审核结果删掉（换台机器 / 清了缓存），
+     重新加载**仍然有默认审核结果**（因为这份数据写在代码里，不是只躺在 localStorage） */
+  await page.evaluate("localStorage.removeItem('archive-proto-system:auditResults'); return 1;");
+  await page.goto(PAGE_URL);
+  await sleep(900);
+  await openReview();
+  const lost = await page.evaluate(`
+    var sum = App.store.auditSummary('${TASK}');
+    var d = JSON.parse(localStorage.getItem('archive-proto-system:auditResults') || '{}');
+    var r = d['${TASK}'];
+    return { total: sum.total, open: sum.open, misses: App.store.auditSeedMisses().length,
+      stored: r ? Object.keys(r.runs).sort().join() + '|' + r.runs.political.items.length : '' };`);
+  check('清掉浏览器里的审核结果后重新加载：默认审核结果**照样在**（写在代码里，不随本地数据丢）',
+    lost.total === 14 && lost.open === 14 && lost.misses === 0 &&
+    lost.stored === 'compliance,political,professional|2',
+    '命中项 ' + lost.total + '（未校定 ' + lost.open + '）；重新落库=' + lost.stored);
+
+  /* ================================================== C2. 第二个演示任务：乡村振兴 */
+  console.log('\n【C2】演示任务「乡村振兴档案史料汇编（续编）」：三类审核都能查出问题');
+  const xc = await page.evaluate(`
+    var t = App.store.tasks().filter(function (x) { return x.topicName.indexOf('乡村振兴') >= 0; })[0];
+    return { id: t.id, name: t.topicName, stage: t.stage, status: t.status,
+      nodes: App.store.outlineOf(t.id).nodes.length,
+      chapters: Object.keys(App.store.composeOf(t.id).chapters).length };`);
+  check('演示任务停在第 4 阶段「审核校定」，且有大纲与正文（否则审核没东西可扫）',
+    xc.stage === 4 && xc.status === 'IN_PROGRESS' && xc.nodes >= 10 && xc.chapters >= 10,
+    xc.id + '｜' + xc.name + '｜第 ' + xc.stage + ' 阶段｜大纲 ' + xc.nodes + ' 条 / 正文 ' + xc.chapters + ' 章');
+
+  await page.evaluate("location.hash = '#/task/" + xc.id + "'; return 1;");
+  await sleep(500);
+  const xcPanel = await page.evaluate(`
+    var m = document.getElementById('main');
+    return { stage: App.store.getTask('${xc.id}').stage,
+      cards: Array.prototype.map.call(m.querySelectorAll('.rv-card'), function (c) {
+        return c.querySelector('.card-head span').textContent.trim(); }),
+      badges: Array.prototype.map.call(m.querySelectorAll('.review-ops-tags .tag'), function (t) {
+        return t.textContent.trim(); }) };`);
+  check('点进度条第 4 步：直接进入「审核校定」，三类卡片**一打开就带着默认审核结果**（不是"尚未审核"）',
+    xcPanel.stage === 4 &&
+    xcPanel.cards.slice(0, 3).join() === '政治性审核,专业性审核,合规性审核' &&
+    xcPanel.cards.length === 4 &&        /* 三类 + 预置的"已校定"带来的修改记录卡 */
+    xcPanel.badges.filter(function (b) { return b.indexOf('未审核') > 0; }).length === 0 &&
+    xcPanel.badges.filter(function (b) { return b.indexOf('待处理') > 0; }).length === 3,
+    xcPanel.cards.join(' / ') + '；' + xcPanel.badges.join('，'));
+
+  /* 不点任何按钮：只读页面，验证默认审核结果（数据写在 mock.AUDIT_RESULTS 里） */
+  const xcRun = await page.evaluate(`
+    var m = document.getElementById('main');
+    function n(key) { var c = m.querySelector('.rv-' + key); return c ? c.querySelectorAll('.rv-item').length : 0; }
+    function titles(key) {
+      var c = m.querySelector('.rv-' + key);
+      return c ? Array.prototype.map.call(c.querySelectorAll('.rv-item-title'), function (x) {
+        return x.textContent.trim(); }) : [];
+    }
+    var sum = App.store.auditSummary('${xc.id}');
+    function pick(f) {
+      return ['political', 'professional', 'compliance'].reduce(function (a, k) {
+        return a + sum.kinds[k][f]; }, 0);
+    }
+    return { sum: sum,
+      political: n('political'), professional: n('professional'), compliance: n('compliance'),
+      ignored: pick('ignored'), fixed: pick('fixed'),
+      ops: (m.querySelector('.review-ops-main') || {}).textContent
+        ? m.querySelector('.review-ops-main').textContent.replace(/\s+/g, ' ').trim() : '',
+      runInfo: Array.prototype.map.call(m.querySelectorAll('.rv-run-info'), function (x) {
+        return x.textContent.replace(/\s+/g, ' ').trim(); }).join(' '),
+      fixRows: m.querySelectorAll('.rv-fix-table tbody tr').length,
+      fixFrom: (m.querySelector('.rv-fix-table tbody tr td:nth-child(3)') || {}).textContent || '',
+      misses: App.store.auditSeedMisses(),
+      ruleText: titles('political').join('；'),
+      proTitles: titles('professional'),
+      compTitles: titles('compliance'),
+      marks: Array.prototype.map.call(m.querySelectorAll('.rv-compliance .rv-context mark'),
+        function (x) { return x.textContent; }) };`);
+  check('默认审核结果：三类都查出问题（政治性 / 专业性 / 合规性 各 ≥ 4 项，共 24 项）',
+    xcRun.political >= 4 && xcRun.professional >= 4 && xcRun.compliance >= 4 &&
+    xcRun.sum.total === 24 &&
+    xcRun.sum.total === xcRun.political + xcRun.professional + xcRun.compliance &&
+    xcRun.misses.length === 0,
+    '政治性 ' + xcRun.political + ' 项 / 专业性 ' + xcRun.professional + ' 项 / 合规性 ' +
+    xcRun.compliance + ' 项｜' + xcRun.ops);
+  check('默认结果里预置了处理状态（1 项已忽略 + 1 项已校定），并因此生成一条修改记录',
+    xcRun.ignored === 1 && xcRun.fixed === 1 && xcRun.fixRows === 1 &&
+    xcRun.fixFrom.indexOf('家庭住址') >= 0 &&
+    xcRun.sum.open === 22 && xcRun.ops.indexOf('已忽略 1') >= 0 &&
+    xcRun.ops.indexOf('历史修改 1 处') >= 0 &&
+    xcRun.runInfo.indexOf('刘洋') >= 0 && xcRun.runInfo.indexOf('本地模拟 AI') >= 0 &&
+    xcRun.runInfo.indexOf('默认审核结果（种子数据）') >= 0,
+    '已忽略 ' + xcRun.ignored + ' 项；已校定 ' + xcRun.fixed + ' 项；修改记录 ' + xcRun.fixRows +
+    ' 条（原文「' + xcRun.fixFrom.trim() + '」）；' + xcRun.ops);
+  check('政治性问题报到「审核规则」的标题与类型（政治类 / 国土类 / 文化类…，不是空泛提示）',
+    xcRun.ruleText.indexOf('政治类') >= 0 && xcRun.ruleText.indexOf('国土类') >= 0 &&
+    xcRun.ruleText.indexOf('文化类') >= 0 && xcRun.ruleText.indexOf('敏感内容') >= 0,
+    xcRun.ruleText.slice(0, 90));
+  check('专业性问题含错别字 / 规范表述 / 民国纪年不一致三类判定',
+    xcRun.proTitles.join(' ').indexOf('错别字') >= 0 &&
+    xcRun.proTitles.join(' ').indexOf('编研规范表述') >= 0 &&
+    xcRun.proTitles.join(' ').indexOf('民国纪年与公元纪年不一致') >= 0,
+    xcRun.proTitles.join('、'));
+  check('合规性问题＝知识产权风险（转载 / 网络图片 / 未获授权）+ 个人隐私及个人信息（身份证号 / 手机号 / 邮箱 / 家庭住址 / 个人简历）',
+    xcRun.compTitles.join(' ').indexOf('知识产权风险') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('转载') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('网络图片') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('未获授权') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('身份证号') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('手机号') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('电子邮箱') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('家庭住址') >= 0 &&
+    xcRun.compTitles.join(' ').indexOf('个人简历') >= 0 &&
+    /* 不再有"依托审核规则"的命中项 */
+    xcRun.compTitles.join(' ').indexOf('敏感内容') < 0,
+    xcRun.compTitles.slice(0, 6).join('；'));
+  const shotXc = await page.shot(SHOT_DIR + 'audit-rural.png');
+
   await page.evaluate("location.hash = '#/task/RW-2026-007'; return 1;");
   await sleep(500);
   const noText = await page.evaluate(`
@@ -921,7 +1081,7 @@ try {
     'scrollW ' + finalSnap.scrollW + ' / ' + finalSnap.clientW + '；卡片：' + cardClasses +
     '（共 ' + finalSnap.cards.length + ' 张，含修改记录）');
   check('截图已生成', true,
-    [shotRules, shotReview].map(function (f) { return f.split('/').slice(-1)[0]; }).join('、'));
+    [shotRules, shotReview, shotXc].map(function (f) { return f.split('/').slice(-1)[0]; }).join('、'));
   const errs = page.errors();
   check('全程没有 JS 异常 / console.error', errs.length === 0,
     errs.length ? 'ERR ' + errs.map(function (e) { return e.kind + ': ' + e.text; }).join(' | ') : '0 条');

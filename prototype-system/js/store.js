@@ -61,6 +61,7 @@
     composes: null,
     auditRules: null,
     auditResults: null,
+    auditSeedMisses: null,
     taskProgress: null,
     messages: null,
     publish: null,
@@ -1167,6 +1168,49 @@
     return state.selections;
   }
 
+  /**
+   * 一条素材条目下的**文件清单**（评审要求：一条条目里可能有多份文件）。
+   * · 素材自带 `files` 就用它（每份文件各有页数，页码按文件校验）；
+   * · 没有 `files` 的条目视为"1 份文件"：文件名取上传的文件名，否则按档号与题名推导（与「查看」一致），
+   *   页数取档案目录的著录页数。
+   * @returns {Array<{no:number,name:string,size:number,pages:number,duration?:number,note?:string,implicit?:boolean}>}
+   */
+  function materialFileList(m) {
+    if (!m) return [];
+    if (m.files && m.files.length) {
+      return m.files.map(function (f, i) {
+        return { no: Number(f.no) || (i + 1), name: String(f.name || ''),
+          size: Number(f.size) || 0, pages: Number(f.pages) || 0,
+          duration: Number(f.duration) || 0, note: f.note || '' };
+      });
+    }
+    var cat = catalogByArchiveNo(m.archiveNo);
+    var size = Number((m.file && m.file.size) || 0);
+    var duration = Number((m.file && m.file.duration) || 0);
+    var name = m.file && m.file.name
+      ? m.file.name
+      : (m.archiveNo ? m.archiveNo + '_' + (m.title || '未命名') + '.pdf' : (m.title || '电子文件') + '.pdf');
+    /* 视频/音频类没有页码：留着"按时长/体积推算的页数"只会误导（曾经推成 1126 页） */
+    var isMedia = /\.(mp4|mov|avi|mkv|wmv|webm|m4v|mp3|wav)$/i.test(name) || duration > 0;
+    var pages = isMedia ? 0 : Number((cat && cat.pages) || m.pages || 0);
+    if (!pages && !isMedia && size) pages = Math.max(1, Math.round(size / 380000));
+    return [{
+      no: 1,
+      name: name,
+      size: size, pages: pages,
+      duration: duration,
+      note: m.file ? '' : '预置的电子文件元数据（按档号与页数推导）。',
+      implicit: true
+    }];
+  }
+
+  /** 取某一份文件（编号缺省＝第 1 份） */
+  function materialFileOf(m, no) {
+    var list = materialFileList(m);
+    var n = Number(no) || 1;
+    return list.filter(function (f) { return f.no === n; })[0] || list[0] || null;
+  }
+
   /** 某任务的选材库（没有就补一个空的，落库与否由调用方决定） */
   function selectionOf(taskId) {
     var all = selections();
@@ -1177,10 +1221,14 @@
   /** 选入范围的文字：整份 12 页 / 第 2-3 页 / 第 3 页 */
   function scopeText(entry) {
     if (!entry) return '';
+    /* 条目下有多份文件时，范围文字前面带上文件名 —— 否则同一素材的两份文件看起来一模一样 */
+    var m = entry.materialId ? getMaterial(entry.materialId) : null;
+    var multi = m ? materialFileList(m).length > 1 : false;
+    var prefix = (multi && entry.file && entry.file.name) ? entry.file.name + ' · ' : '';
     if (entry.scope !== 'pages' || !(entry.pages || []).length) {
-      return '整个文件' + (entry.pageCount ? '（共 ' + entry.pageCount + ' 页）' : '');
+      return prefix + '整个文件' + (entry.pageCount ? '（共 ' + entry.pageCount + ' 页）' : '');
     }
-    return pagesText(entry.pages) + (entry.pageCount ? '（共 ' + entry.pageCount + ' 页）' : '');
+    return prefix + pagesText(entry.pages) + (entry.pageCount ? '（共 ' + entry.pageCount + ' 页）' : '');
   }
 
   /** 把指定页的页码区间压成文字：1,2,3,5,6 → 1-3、5-6 */
@@ -1212,10 +1260,13 @@
     var added = [], skipped = [];
     (items || []).forEach(function (it) {
       var pages = (it.pages || []).slice().sort(function (a, b) { return a - b; });
-      var sig = (it.materialId || it.title) + '|' + (pages.length ? pages.join(',') : 'all');
+      /* 判重口径＝「素材 + 文件 + 范围」：同一条素材下的两份文件可以分别加入 */
+      var fileNo = Number(it.fileNo) || 1;
+      var sig = (it.materialId || it.title) + '#' + fileNo + '|' + (pages.length ? pages.join(',') : 'all');
       var dup = rec.entries.some(function (e) {
         var ep = (e.pages || []).slice().sort(function (a, b) { return a - b; });
-        return ((e.materialId || e.title) + '|' + (ep.length ? ep.join(',') : 'all')) === sig;
+        return ((e.materialId || e.title) + '#' + (Number(e.fileNo) || 1) + '|' +
+          (ep.length ? ep.join(',') : 'all')) === sig;
       });
       if (dup) { skipped.push(it.title); return; }
       rec.seq = (rec.seq || 0) + 1;
@@ -1231,6 +1282,8 @@
         scope: pages.length ? 'pages' : 'all',
         pages: pages,
         pageCount: Number(it.pageCount) || 0,
+        /* 一条素材可能有多份文件：选材记录要记住"选的是哪一份"，下游（加工编排的文件浏览）也按它取文件 */
+        fileNo: fileNo,
         note: it.note || '',
         /* ⚠️ 视频素材要靠 file.duration 做"插入帧"的时长校验，
            这里只留 name/size 会把时长丢掉（曾经就是这个原因，选进来的视频看不出是视频/没有时长） */
@@ -1895,9 +1948,88 @@
   }
 
   function resetAudit(taskId) {
-    optAuditResults()[taskId] = { taskId: taskId, runs: {}, fixes: [] };
+    /* 默认审核结果是**写进代码的种子数据**（mock.AUDIT_RESULTS）：
+       重置某个任务的审核结果＝回到那份默认结果，而不是变成"一片空白" */
+    delete optAuditResults()[taskId];
+    seedDefaultAuditResults();
     saveAuditResults();
     notify();
+  }
+
+  /* ------------------------------------------------------------------
+     默认审核结果（评审要求：审核校定环节**一打开就要有审核结果**，而且这份数据不能丢）
+
+     数据来源：mock.js 的 AUDIT_RESULTS —— 它只声明"谁、什么时候审的"与
+     **已经处理过的项**（已校定 / 已忽略）；命中项本体由**本地审核引擎**
+     （js/audit.js）现扫一遍种子正文算出，与页面点「一键全部审核」的结果完全一致。
+
+     三个要点：
+       · **不写死位置**：按「类别 + 章节 + 命中文本」认项，正文改了位置跟着变；
+       · **不覆盖用户结果**：某个任务只要已经有审核记录（用户自己跑过 / 处理过），就整条跳过；
+       · **不会丢**：种子版本变化时会照这里重新生成（而不是只剩浏览器里的旧数据）。
+     认不上的项记进 state.auditSeedMisses，供验证套件断言"种子里没有写错的项"。
+     ------------------------------------------------------------------ */
+  function seedDefaultAuditResults() {
+    var seeds = (App.mock && App.mock.AUDIT_RESULTS) || {};
+    var all = optAuditResults();
+    var seeded = 0;
+    if (!state.auditSeedMisses) state.auditSeedMisses = [];
+    if (!App.audit || typeof App.audit.run !== 'function') return;   /* 引擎还没加载（脚本顺序） */
+
+    Object.keys(seeds).forEach(function (taskId) {
+      var seed = seeds[taskId] || {};
+      /* 任务不在种子里（编号写错 / 任务被删）：不播种，免得留下一条"不存在任务的审核结果" */
+      if (!tasks().some(function (t) { return t.id === taskId; })) return;
+      var rec = all[taskId];
+      if (rec && Object.keys(rec.runs || {}).length) return;        /* 已有审核记录：保留 */
+      var handled = (seed.handled || []).slice();
+      var used = [];
+      var runs = {};
+      var fixes = [];
+
+      ['political', 'professional', 'compliance'].forEach(function (kind) {
+        var items = App.audit.run(taskId, kind) || [];
+        items.forEach(function (it) {
+          var hit = null;
+          for (var i = 0; i < handled.length; i++) {
+            var h = handled[i];
+            if (h.kind === it.kind && h.chapterId === it.chapterId && h.text === it.text) {
+              hit = h;
+              used.push(i);
+              break;
+            }
+          }
+          if (!hit) return;
+          if (hit.status === 'ignored') {
+            it.status = 'ignored';
+            it.ignoreNote = hit.note || '';
+          } else if (hit.status === 'fixed') {
+            it.status = 'fixed';
+            it.fix = {
+              itemId: it.id, kind: it.kind, chapterId: it.chapterId, chapterTitle: it.chapterTitle,
+              start: it.start, from: it.text, to: it.text,
+              at: seed.at || '', by: seed.by || '系统预置',
+              mode: hit.mode || 'mark', reason: it.ruleTitle || it.title || '',
+              note: hit.note || '人工确认（正文未变）'
+            };
+            fixes.unshift(it.fix);
+          }
+        });
+        /* 三类都记一条"审核记录"（没有命中就是"已审核·无问题"），与点一键审核一致；
+           seeded 标记它是**默认审核结果**（页面上会写明，用户自己重跑后就没有这个标记了） */
+        runs[kind] = { at: seed.at || '', by: seed.by || '系统预置', items: items, seeded: true };
+      });
+
+      handled.forEach(function (h, i) {
+        if (used.indexOf(i) < 0) {
+          state.auditSeedMisses.push(taskId + '｜' + h.kind + '｜' + h.chapterId + '｜' + h.text);
+        }
+      });
+
+      all[taskId] = { taskId: taskId, runs: runs, fixes: fixes };
+      seeded++;
+    });
+    if (seeded) saveAuditResults();
   }
 
   /** 汇总：每类的命中/待处理/已修改/已忽略，以及历史修改条数 */
@@ -1910,6 +2042,8 @@
       var items = run ? run.items : [];
       out.kinds[k] = {
         ran: !!run, at: run ? run.at : '', by: run ? run.by : '',
+        /* seeded＝这条审核记录来自**默认审核结果**（种子），不是用户自己跑的 */
+        seeded: !!(run && run.seeded),
         total: items.length,
         open: items.filter(function (i) { return i.status === 'open'; }).length,
         fixed: items.filter(function (i) { return i.status === 'fixed'; }).length,
@@ -2865,7 +2999,9 @@
       roleLabel: '编研人员',
       dept: data.dept || '编研利用科',
       isAdmin: false,
-      title: '编研人员',
+      /* 职位由「新增用户」表单填写（留空＝未填写，列表显示「—」）；
+         角色 / 部门不在界面上维护，仍按原型假设给默认值 */
+      title: String(data.title || '').trim(),
       locked: false,
       createdAt: new Date().toISOString()
     };
@@ -2889,6 +3025,7 @@
     if (password && password.length < 6) return { ok: false, message: '密码至少 6 位' };
     u.account = account;
     u.name = name;
+    if (data.title !== undefined) u.title = String(data.title || '').trim();
     if (password) u.password = password;
     saveUsers();
     notify();
@@ -3217,6 +3354,8 @@
     if (!readComposes()) resetComposes();
     if (!readAuditRules()) resetAuditRules();
     if (!readAuditResults()) state.auditResults = {};
+    /* 默认审核结果（写在 mock.AUDIT_RESULTS 里）：没有审核记录的任务按种子播种 */
+    seedDefaultAuditResults();
     if (!readMessages()) resetMessages();
     if (!readPublish()) state.publish = {};
     /* 已完成且已登记成果的任务：补齐"发布审核通过后应归档"的四类材料（幂等） */
@@ -3267,6 +3406,8 @@
     resetOutlines: resetOutlines,
     /* 第 2 阶段「确定选材」 */
     selectionOf: selectionOf,
+    materialFileList: materialFileList,
+    materialFileOf: materialFileOf,
     addSelections: addSelections,
     removeSelections: removeSelections,
     scopeText: scopeText,
@@ -3295,6 +3436,9 @@
     ignoreAuditItem: ignoreAuditItem,
     resetAudit: resetAudit,
     auditSummary: auditSummary,
+    /* 默认审核结果（种子）：可显式重播；misses 供验证套件核对种子没写错项 */
+    seedAuditResults: seedDefaultAuditResults,
+    auditSeedMisses: function () { return (state.auditSeedMisses || []).slice(); },
     /* 消息中心 */
     messages: messages,
     myMessages: myMessages,

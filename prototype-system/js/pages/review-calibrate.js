@@ -134,9 +134,12 @@
     var html = segs.map(function (b) {
       var s0 = Math.max(b.start, from), e0 = Math.min(b.end, to);
       var part = doc.text.slice(s0, e0);
-      /* 这一块里落到的命中项：标黄 */
+      /* 标黄：**只标黄当前定位的那一处**（评审口径）。
+         ⚠️ 这里曾经把"本页所有命中项"都标黄 —— 一页上有 4 处命中时，点了其中一处会同时黄 4 处，
+            看不出"点的是哪一处"；现在只标 state.hitKey 那一项（没有定位就都不标，命中项在右栏列着）。 */
       var marks = allItems().filter(function (it) {
         if (it.chapterId !== b.chapterId) return false;
+        if (!state.hitKey || state.hitKey !== it.kind + ':' + it.id) return false;
         var o = hitOffset(doc, it);
         return o >= s0 && o < e0;
       }).sort(function (a, b2) { return hitOffset(doc, a) - hitOffset(doc, b2); });

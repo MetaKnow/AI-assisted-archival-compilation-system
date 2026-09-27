@@ -59,10 +59,12 @@ async function clearToasts() {
 /** 在「选择素材」弹窗里勾选指定素材 */
 async function pickMaterials(ids) {
   await page.evaluate(`
-    var wanted = ${JSON.stringify(ids)};
+    /* 选择单位是"文件"：传素材编号时默认勾它的第 1 份文件（也可用 'M-001#2' 指定第 2 份） */
+    var wanted = ${JSON.stringify(ids)}.map(function (id) {
+      return String(id).indexOf('#') >= 0 ? String(id) : id + '#1'; });
     Array.prototype.forEach.call(document.querySelectorAll('.pick-table tbody tr'), function (tr) {
       var cb = tr.querySelector('input[data-change="sel:pick-select"]');
-      if (wanted.indexOf(cb.getAttribute('data-id')) >= 0 && !cb.checked) {
+      if (cb && wanted.indexOf(cb.getAttribute('data-id')) >= 0 && !cb.checked) {
         cb.checked = true;
         cb.dispatchEvent(new Event('change', { bubbles: true }));
       }
@@ -125,20 +127,40 @@ const MODAL = `
     title: m.querySelector('.modal-head').textContent.trim(),
     ok: m.querySelector('.modal-foot [data-action="ui:ok"]').textContent.trim(),
     rows: m.querySelectorAll('.pick-table tbody tr').length,
+    groups: m.querySelectorAll('.pick-table tbody tr.pick-group').length,
+    fileRows: m.querySelectorAll('.pick-table tbody tr.pick-file-row').length,
     cols: Array.prototype.map.call(m.querySelectorAll('.pick-table thead th'), function (t) {
       return t.textContent.trim(); }).filter(Boolean),
     first: (function () {
-      var tr = m.querySelector('.pick-table tbody tr');
+      var tr = m.querySelector('.pick-table tbody tr.pick-group');
       if (!tr) return null;
       var tds = tr.querySelectorAll('td');
       return { title: tds[2].textContent.trim(), cat: tds[3].textContent.trim(),
-        tags: tds[4].textContent.trim(), pages: tds[5].textContent.trim() };
+        tags: tds[4].textContent.trim(), pages: tds[5].textContent.trim(),
+        fileCount: tr.querySelectorAll('.tag').length,
+        files: Array.prototype.map.call(tr.parentNode.querySelectorAll('tr.pick-file-row'), function (x) {
+          return x.textContent.replace(/\s+/g, ' ').trim(); }) };
     })(),
     scope: m.querySelector('.scope-box') ? m.querySelector('.scope-box').textContent.replace(/\\s+/g, ' ').trim() : '',
     scopeMode: (function () {
       var r = m.querySelector('input[name="sel-scope"]:checked');
       return r ? r.value : '';
     })(),
+    /* 先选文件、再选范围：两步的文案 / 第 1 步状态 / 两个单选是否可用 */
+    steps: Array.prototype.map.call(m.querySelectorAll('.scope-step'), function (x) {
+      return x.textContent.replace(/\\s+/g, ' ').trim(); }),
+    stepState: (m.querySelector('#pick-step-state') || {}).textContent
+      ? m.querySelector('#pick-step-state').textContent.trim() : '',
+    scopeDisabled: Array.prototype.map.call(m.querySelectorAll('input[name="sel-scope"]'), function (r) {
+      return r.value + ':' + (r.disabled ? 'off' : 'on'); }).join(','),
+    scopeLabels: Array.prototype.map.call(m.querySelectorAll('input[name="sel-scope"]'), function (r) {
+      return r.value + '=' + r.parentNode.textContent.trim(); }).join('｜'),
+    catOptions: Array.prototype.map.call(m.querySelectorAll('#pick-cat option'), function (o) {
+      return o.textContent.trim(); }),
+    catValue: (m.querySelector('#pick-cat') || {}).value || '',
+    rowClickable: (function () {
+      var tr = m.querySelector('.pick-table tbody tr.pick-file-row');
+      return !!(tr && tr.getAttribute('data-action') === 'sel:pick-row'); })(),
     pagesInput: !!m.querySelector('#sel-pages'),
     inputs: m.querySelectorAll('input[type="text"], input:not([type]), textarea, select').length,
     fields: Array.prototype.map.call(m.querySelectorAll('.field-label'), function (e) {
@@ -174,10 +196,11 @@ try {
   check('选材库列：序号 / 素材名称 / 档案门类 / 素材标签 / 加入范围 / 来源 / 加入时间 / 加入人 / 操作',
     lib.cols.join() === '序号,素材名称,档案门类,素材标签,加入范围,来源,加入时间,加入人,操作',
     lib.cols.join(' / '));
-  check('加入范围区分「整个文件」与「指定页」（含总页数；视频素材没有页数，只写整个文件）',
-    lib.scopes.filter(function (x) { return x.indexOf('整个文件') === 0; }).length === 3 &&
+  check('加入范围区分「整个文件」与「个别页」（含总页数；条目有多份文件时范围前带文件名）',
+    lib.scopes.filter(function (x) { return x.indexOf('整个文件') >= 0; }).length === 3 &&
+    lib.scopes.filter(function (x) { return x.indexOf('· 整个文件') > 0; }).length === 1 &&
     lib.scopes.indexOf('整个文件') >= 0 &&
-    lib.scopes.some(function (x) { return x === '第 2-3 页（共 9 页）'; }),
+    lib.scopes.some(function (x) { return x.indexOf('第 2-3 页（共 6 页）') > 0; }),
     lib.scopes.join('；'));
   check('行内操作是「查看 / 移除」，工具栏有选择素材 / 上传素材 / 移除素材',
     lib.actions.join() === '查看,移除' && lib.removeDisabled === true,
@@ -251,7 +274,7 @@ try {
     'stage=' + back2.stage + '；阶段史=' + back2.hist);
 
   /* ================================================== C. 选择素材 */
-  console.log('\n【C】选择素材：数据与素材管理一致 + 整份 / 指定页');
+  console.log('\n【C】选择素材：数据与素材管理一致 + 整份 / 个别页');
   await click('[data-action="sel:pick"]');
   let mo = await page.evaluate(MODAL);
   const storeInfo = await page.evaluate(`
@@ -260,32 +283,141 @@ try {
     var cat = App.store.catalogByArchiveNo(m.archiveNo);
     return { count: ms.length, title: m.title, cat: m.category, tags: (m.tagIds || []).length,
       pages: (cat && cat.pages) || 0, tagOptions: App.store.tagsWithUsage().length };`);
-  check('弹窗里的素材就是素材库那一份（' + storeInfo.count + ' 条），并带页数',
-    !mo.err && mo.rows === storeInfo.count &&
-    mo.first.title === storeInfo.title && mo.first.cat === storeInfo.cat &&
+  check('弹窗里的素材就是素材库那一份（' + storeInfo.count + ' 条），条目行 + 文件行两级',
+    !mo.err && mo.groups === storeInfo.count && mo.fileRows >= mo.groups &&
+    mo.first.title.indexOf(storeInfo.title) === 0 && mo.first.cat === storeInfo.cat &&
     mo.first.pages === storeInfo.pages + ' 页' &&
-    mo.cols.join() === '序号,素材名称,档案门类,素材标签,页数,操作',
-    mo.err || (mo.rows + ' 条；首行「' + mo.first.title + '」' + mo.first.cat +
-      '／' + mo.first.pages));
-  check('加入方式：整个文件 / 指定页（默认整个文件）',
+    mo.cols.join() === '序号,素材名称 / 文件,档案门类,素材标签,页数,操作',
+    mo.err || (mo.groups + ' 条素材 / ' + mo.fileRows + ' 份文件；首行「' + mo.first.title + '」' +
+      mo.first.cat + '／' + mo.first.pages));
+  check('选择素材弹窗：多了「档案门类」筛选（与素材管理同一套门类与件数）',
+    mo.catOptions[0] === '全部门类' && mo.catOptions.length >= 3 &&
+    mo.catOptions.slice(1).every(function (o) { return o.indexOf('（') > 0 && o.slice(-1) === '）'; }),
+    mo.catOptions.join('　'));
+  check('加入范围：整个文件 / 个别页；未选文件时两个单选都不可用（先选文件那一步没完成）',
     mo.scopeMode === 'all' && !mo.pagesInput &&
-    mo.scope.indexOf('整个文件') >= 0 && mo.scope.indexOf('指定页') >= 0,
-    '默认=' + mo.scopeMode);
+    mo.scope.indexOf('整个文件') >= 0 && mo.scope.indexOf('个别页') >= 0 &&
+    mo.scopeDisabled === 'all:off,pages:off' &&
+    mo.steps.join('｜').indexOf('1选择文件') >= 0 &&
+    mo.steps.join('｜').indexOf('2选择加入范围') >= 0 && mo.stepState === '尚未选择',
+    mo.scopeDisabled + '｜' + mo.steps.join(' / '));
+  check('列表整行可点选（点任意一行＝选择这份文件）',
+    mo.rowClickable, mo.rowClickable ? 'tr[data-action=sel:pick-row]' : 'ERR 行不可点');
+
+  /* ---- 按门类筛选：只剩该门类，且计数跟着变 ---- */
+  const catFilter = await page.evaluate(`
+    var sel = document.getElementById('pick-cat');
+    var before = document.querySelectorAll('.pick-table tbody tr.pick-group').length;
+    var opt = Array.prototype.slice.call(sel.options).filter(function (o) { return o.value; })[1];
+    sel.value = opt.value; sel.dispatchEvent(new Event('change', { bubbles: true }));
+    var cats = Array.prototype.map.call(document.querySelectorAll('.pick-table tbody tr.pick-group td.col-cat'),
+      function (td) { return td.textContent.trim(); });
+    var uniq = cats.filter(function (v, i) { return cats.indexOf(v) === i; });
+    var files = document.querySelectorAll('.pick-table tbody tr.pick-file-row').length;
+    return { name: opt.textContent.replace(/（\\d+）$/, ''), before: before,
+      after: cats.length, files: files, uniq: uniq,
+      count: document.getElementById('pick-count').textContent.trim() };`);
+  check('按档案门类筛选：列表只剩该门类的素材（条目行与文件行一起收窄），顶部计数同步',
+    catFilter.after > 0 && catFilter.uniq.join() === catFilter.name &&
+    catFilter.after < catFilter.before && catFilter.files >= catFilter.after &&
+    catFilter.count.indexOf('共 ' + catFilter.files + ' 份文件') >= 0 &&
+    catFilter.count.indexOf('（' + catFilter.after + ' 条素材）') >= 0,
+    catFilter.name + '：' + catFilter.before + ' → ' + catFilter.after + ' 条素材 / ' +
+    catFilter.files + ' 份文件；' + catFilter.count);
+
+  /* 门类 + 标签可叠加：先按标签筛，再按"当前列表里实际出现的门类"叠加（保证结果非空） */
+  const combo = await page.evaluate(`
+    /* 先把门类清空，再按标签筛 —— 否则两个条件可能同时命中 0 条，读不到行 */
+    var c0 = document.getElementById('pick-cat');
+    c0.value = ''; c0.dispatchEvent(new Event('change', { bubbles: true }));
+    var tsel = document.getElementById('pick-tag');
+    var topt = Array.prototype.slice.call(tsel.options).filter(function (o) { return o.value; })[0];
+    tsel.value = topt.value; tsel.dispatchEvent(new Event('change', { bubbles: true }));
+    var byTag = document.querySelectorAll('.pick-table tbody tr.pick-group').length;
+    var catOfFirst = document.querySelector('.pick-table tbody tr.pick-group td.col-cat').textContent.trim();
+    var csel = document.getElementById('pick-cat');
+    csel.value = catOfFirst; csel.dispatchEvent(new Event('change', { bubbles: true }));
+    var cats = Array.prototype.map.call(document.querySelectorAll('.pick-table tbody tr.pick-group td.col-cat'),
+      function (td) { return td.textContent.trim(); });
+    return { byTag: byTag, n: cats.length, tag: topt.textContent.trim(), cat: catOfFirst,
+      uniq: cats.filter(function (v, i) { return cats.indexOf(v) === i; }),
+      count: document.getElementById('pick-count').textContent.trim() };`);
+  check('门类筛选与标签筛选可以叠加（结果全是该门类，条目数不超过单条件）',
+    combo.n > 0 && combo.n <= combo.byTag && combo.uniq.join() === combo.cat &&
+    combo.count.indexOf('（' + combo.n + ' 条素材）') >= 0,
+    combo.tag + '（' + combo.byTag + ' 条） + ' + combo.cat + ' → ' + combo.n + ' 条素材');
+  await page.evaluate(`
+    var c = document.getElementById('pick-cat'); c.value = '';
+    c.dispatchEvent(new Event('change', { bubbles: true }));
+    var t = document.getElementById('pick-tag'); t.value = '';
+    t.dispatchEvent(new Event('change', { bubbles: true }));
+    return 1;`);
+
+  /* ---- 先选文件、再选范围：整行点选 → 两个单选才可用 ---- */
+  const stepFlow = await page.evaluate(`
+    function snap() {
+      var m = document.querySelector('.modal');
+      return { state: (m.querySelector('#pick-step-state') || {}).textContent.trim(),
+        disabled: Array.prototype.map.call(m.querySelectorAll('input[name="sel-scope"]'), function (r) {
+          return r.value + ':' + (r.disabled ? 'off' : 'on'); }).join(','),
+        checked: m.querySelectorAll('.pick-table tbody input:checked').length,
+        rows: m.querySelectorAll('.pick-table tbody tr.selected').length };
+    }
+    var before = snap();
+    var tr = document.querySelector('.pick-table tbody tr.pick-file-row');
+    tr.scrollIntoView({ block: 'center' });
+    var r = tr.getBoundingClientRect();
+    return { before: before, x: r.left + 320, y: r.top + r.height / 2,
+      id: tr.getAttribute('data-id') };`);
+  await page.mouseClick(stepFlow.x, stepFlow.y);
+  await sleep(300);
+  const afterRow = await page.evaluate(`
+    var m = document.querySelector('.modal');
+    return { state: (m.querySelector('#pick-step-state') || {}).textContent.trim(),
+      disabled: Array.prototype.map.call(m.querySelectorAll('input[name="sel-scope"]'), function (r) {
+        return r.value + ':' + (r.disabled ? 'off' : 'on'); }).join(','),
+      checked: m.querySelectorAll('.pick-table tbody input:checked').length,
+      rows: m.querySelectorAll('.pick-table tbody tr.selected').length,
+      hint: m.querySelector('#sel-scope-hint').textContent.trim() };`);
+  check('第 1 步「尚未选择」→ 点整行选择文件后：勾选与行高亮同步、第 1 步显示已选份数',
+    stepFlow.before.state === '尚未选择' && afterRow.state === '已选 1 份' &&
+    afterRow.checked === 1 && afterRow.rows === 1,
+    stepFlow.before.state + ' → ' + afterRow.state + '｜勾选 ' + afterRow.checked + ' 行高亮 ' + afterRow.rows);
+  check('第 2 步：选过文件后两个范围单选才可用（之前是 all:off,pages:off）',
+    stepFlow.before.disabled === 'all:off,pages:off' &&
+    afterRow.disabled === 'all:on,pages:on' &&
+    afterRow.hint.indexOf('已选择 1 份文件') >= 0,
+    stepFlow.before.disabled + ' → ' + afterRow.disabled);
+
+  /* 再点一次同一行 → 取消选择，范围又变回不可用 */
+  await page.mouseClick(stepFlow.x, stepFlow.y);
+  await sleep(300);
+  const afterUnpick = await page.evaluate(`
+    var m = document.querySelector('.modal');
+    return { state: (m.querySelector('#pick-step-state') || {}).textContent.trim(),
+      disabled: Array.prototype.map.call(m.querySelectorAll('input[name="sel-scope"]'), function (r) {
+        return r.value + ':' + (r.disabled ? 'off' : 'on'); }).join(','),
+      checked: m.querySelectorAll('.pick-table tbody input:checked').length };`);
+  check('再点一次同一行＝取消选择，第 1 步回到「尚未选择」、范围单选重新禁用',
+    afterUnpick.state === '尚未选择' && afterUnpick.disabled === 'all:off,pages:off' &&
+    afterUnpick.checked === 0,
+    afterUnpick.state + '｜' + afterUnpick.disabled);
 
   /* 视频素材：页数列显示"视频 · 时长"，而不是"0 页" */
   const videoRow = await page.evaluate(`
-    var trs = Array.prototype.slice.call(document.querySelectorAll('.pick-table tbody tr'));
-    var hit = trs.filter(function (tr) { return tr.textContent.indexOf('录像') >= 0; })[0];
-    if (!hit) return null;
-    var tds = hit.querySelectorAll('td');
-    return { title: tds[2].textContent.trim(), cat: tds[3].textContent.trim(),
-      pages: tds[5].textContent.trim(), id: hit.querySelector('input').getAttribute('data-id') };`);
+    var groups = Array.prototype.slice.call(document.querySelectorAll('.pick-table tbody tr.pick-group'));
+    var grp = groups.filter(function (tr) { return tr.textContent.indexOf('录像') >= 0; })[0];
+    if (!grp) return null;
+    var file = grp.nextElementSibling;
+    var tds = file.querySelectorAll('td');
+    return { title: tds[2].textContent.trim(), cat: grp.querySelectorAll('td')[3].textContent.trim(),
+      pages: tds[5].textContent.trim(), id: file.querySelector('input').getAttribute('data-id') };`);
   check('素材弹窗里视频素材的"页数"列显示识别结果（视频 · 时长），不是 0 页',
     !!videoRow && videoRow.pages.indexOf('视频') === 0 && videoRow.pages.indexOf(':') >= 0 &&
     videoRow.cat === '声像档案',
     videoRow ? (videoRow.title + '／' + videoRow.cat + '／' + videoRow.pages) : 'ERR 弹窗里没有录像素材');
 
-  /* 视频 + 指定页：拦住（视频没有页码） */
+  /* 视频 + 个别页：拦住（视频没有页码） */
   await clearToasts();
   await page.evaluate(`
     var cb = document.querySelector('.pick-table input[data-id="${videoRow.id}"]');
@@ -296,8 +428,8 @@ try {
   await sleep(250);
   await click('.modal [data-action="ui:ok"]');
   const vidToast = await lastToast();
-  check('选中视频素材时切到「指定页」：保存被拦住并说明视频没有页码',
-    vidToast.indexOf('视频素材没有页码') >= 0 && vidToast.indexOf('整个文件') >= 0,
+  check('选中视频素材时切到「个别页」：保存被拦住并说明视频（文件）没有页码',
+    vidToast.indexOf('视频文件没有页码') >= 0 && vidToast.indexOf('整个文件') >= 0,
     '轻提示：' + vidToast);
 
   /* 先用弹窗把种子里那条录像移除，再重新加入一次：
@@ -342,10 +474,13 @@ try {
       return (m.tagIds || []).indexOf(tag.id) >= 0; }).length,
       label: document.querySelector('#pick-tag option:checked').textContent };`);
   await sleep(300);
-  const afterTag = await page.evaluate("return document.querySelectorAll('.pick-table tbody tr').length;");
-  check('按素材标签筛选：只列该标签下的素材（行数 = 该标签的素材件数）',
-    afterTag === byTag.expect && afterTag < storeInfo.count,
-    byTag.label + ' → ' + afterTag + ' 行（期望 ' + byTag.expect + '）');
+  const afterTag = await page.evaluate(`
+    return { groups: document.querySelectorAll('.pick-table tbody tr.pick-group').length,
+      files: document.querySelectorAll('.pick-table tbody tr.pick-file-row').length };`);
+  check('按素材标签筛选：只列该标签下的素材（条目数 = 该标签的素材件数）',
+    afterTag.groups === byTag.expect && afterTag.groups < storeInfo.count,
+    byTag.label + ' → ' + afterTag.groups + ' 条素材 / ' + afterTag.files +
+    ' 份文件（期望 ' + byTag.expect + ' 条）');
   await page.evaluate(`
     var sel = document.getElementById('pick-tag');
     sel.value = '';
@@ -377,8 +512,8 @@ try {
   await clearToasts();
   await click('.modal [data-action="ui:ok"]');
   const noPick = await lastToast();
-  check('一份素材都没勾选就保存：拦住不放行',
-    noPick.indexOf('请先勾选') >= 0 &&
+  check('一份文件都没选择就保存：拦住不放行',
+    noPick.indexOf('请先选择要加入的文件') >= 0 &&
     (await page.evaluate("return !!document.querySelector('.modal');")),
     '轻提示：' + noPick);
 
@@ -386,15 +521,16 @@ try {
   const freeIds = await page.evaluate(`
     var rec = App.store.selectionOf('${TASK}');
     return App.store.materials().filter(function (m) {
-      return !rec.entries.some(function (e) { return e.materialId === m.id && e.scope === 'all'; });
+      return !rec.entries.some(function (e) {
+        return e.materialId === m.id && (Number(e.fileNo) || 1) === 1 && e.scope === 'all'; });
     }).slice(0, 2).map(function (m) { return m.id; });`);
   await pickMaterials(freeIds);
   const picked2 = await page.evaluate(`
     return { count: document.getElementById('pick-count').textContent.trim(),
       hint: document.getElementById('sel-scope-hint').textContent.trim() };`);
-  check('勾选后就地提示"已勾选 N 份"，并说明都会以整个文件加入（不整页重渲染）',
+  check('选择后就地提示"已勾选 N 份"，并说明都会以整个文件加入（不整页重渲染）',
     picked2.count.indexOf('已勾选 2 份') >= 0 &&
-    picked2.hint.indexOf('已勾选 2 份素材') === 0 && picked2.hint.indexOf('整个文件') >= 0,
+    picked2.hint.indexOf('已选择 2 份文件') === 0 && picked2.hint.indexOf('整个文件') >= 0,
     picked2.count + '；' + picked2.hint);
   await click('.modal [data-action="ui:ok"]');
   await sleep(450);
@@ -407,7 +543,7 @@ try {
   check('加入 2 条（整份文件）：选材库 +2，来源=素材库、范围=整个文件（带总页数）',
     lib.rows === SEED.selections + 2 && added2.total === SEED.selections + 2 &&
     added2.all === SEED.selections + 1 &&
-    lib.scopes.filter(function (x) { return /^整个文件（共 \d+ 页）$/.test(x); }).length === SEED.selections,
+    lib.scopes.filter(function (x) { return x.indexOf('整个文件（共 ') >= 0; }).length === SEED.selections,
     '共 ' + lib.rows + ' 条；' + lib.scopes.join('；'));
 
   /* 重复加入同样范围 → 跳过（用种子里已有的那条 M-001「整份」） */
@@ -427,13 +563,14 @@ try {
     dupToast.indexOf('跳过重复 1 条') >= 0,
     '轻提示：' + dupToast);
 
-  /* 多选只对「整个文件」成立；「指定页」只能一份 */
+  /* 多选只对「整个文件」成立；「个别页」只能一份 */
   await clearToasts();
   await click('[data-action="sel:pick"]');
   const threeFree = await page.evaluate(`
     var rec = App.store.selectionOf('${TASK}');
     return App.store.materials().filter(function (m) {
-      return !rec.entries.some(function (e) { return e.materialId === m.id && e.scope === 'all'; });
+      return !rec.entries.some(function (e) {
+        return e.materialId === m.id && (Number(e.fileNo) || 1) === 1 && e.scope === 'all'; });
     }).slice(0, 3).map(function (m) { return m.id; });`);
   await pickMaterials(threeFree);
   const multiOk = await page.evaluate(`
@@ -456,20 +593,24 @@ try {
       radioLabel: document.querySelector('input[name="sel-scope"][value="pages"]').parentNode.textContent.trim(),
       allLabel: document.querySelector('input[name="sel-scope"][value="all"]').parentNode.textContent.trim() };`);
   const trimToast = await lastToast();
-  check('切到「指定页」：勾选自动裁到一份，并提示原因',
+  check('切到「个别页」：选择自动裁到一份，并提示原因',
     trimmed.checked === 1 && trimmed.count.indexOf('已勾选 1 份') >= 0 &&
-    trimToast.indexOf('一次只能选一份素材') >= 0,
+    trimToast.indexOf('一次只能选一份文件') >= 0,
     '剩 ' + trimmed.checked + ' 份；轻提示：' + trimToast);
 
-  /* 指定页模式下再勾另一份 → 替换（单选语义） */
+  /* 个别页模式下再勾另一份 → 替换（单选语义） */
   await clearToasts();
   const other = await page.evaluate(`
-    var ids = ${JSON.stringify(threeFree)};
-    var free = ids.filter(function (id) {
-      var cb = document.querySelector('.pick-table input[data-id="' + id + '"]');
-      return cb && !cb.checked;
-    });
-    return free[0] || '';`);
+    /* 换一份**当前没被选中**的文件：挑一处"页数 ≥ 6"的（后面的 1,3,5-6 校验要用到 6 页），
+       这样既能验证"个别页下再选一份＝替换"，也不影响后面的页码断言 */
+    var cbs = Array.prototype.slice.call(document.querySelectorAll('.pick-table input[data-change="sel:pick-select"]'));
+    var hit = cbs.filter(function (cb) {
+      if (cb.checked) return false;
+      var tr = cb.closest('tr');
+      var pages = parseInt((tr.querySelector('td.col-pages') || {}).textContent || '0', 10) || 0;
+      return pages >= 6;
+    })[0];
+    return hit ? hit.getAttribute('data-id') : '';`);
   await pickMaterials([other]);
   const replaced = await page.evaluate(`
     var checked = Array.prototype.map.call(document.querySelectorAll('.pick-table tbody input:checked'),
@@ -477,7 +618,7 @@ try {
     return { checked: checked, hint: document.getElementById('sel-scope-hint').textContent.trim(),
       count: document.getElementById('pick-count').textContent.trim() };`);
   const replaceToast = await lastToast();
-  check('「指定页」下再勾另一份：替换前一份（始终只有一份），提示条说明页码针对哪一份',
+  check('「个别页」下再勾另一份：替换前一份（始终只有一份），提示条说明页码针对哪一份',
     replaced.checked.length === 1 && replaced.checked[0] === other &&
     replaceToast.indexOf('已改为只选') >= 0 &&
     replaced.hint.indexOf('页码针对《') === 0,
@@ -487,14 +628,14 @@ try {
     trimmed.allLabel + ' / ' + trimmed.radioLabel);
 
   const pagesUi = await page.evaluate(MODAL);
-  check('指定页的页码校验按**这一份**素材的页数（不再是多份取最小）',
+  check('个别页的页码校验按**这一份**素材的页数（不再是多份取最小）',
     pagesUi.scope.indexOf('页码针对《') >= 0 && pagesUi.scope.indexOf('1 – ') >= 0,
     pagesUi.scope.slice(0, 70));
 
-  /* 用这一份 + 指定页继续往下（下面是原来的指定页断言） */
+  /* 用这一份 + 个别页继续往下（下面是原来的个别页断言） */
   const shotPicker = await page.shot(SHOT_DIR + 'selection-picker.png');
   const pagesUi2 = await page.evaluate(MODAL);
-  check('「指定页」显示页码输入框',
+  check('「个别页」显示页码输入框',
     pagesUi2.scopeMode === 'pages' && pagesUi2.pagesInput, '页码输入框=' + pagesUi2.pagesInput);
 
   /* 校验：格式错、空、超范围 */
@@ -507,7 +648,7 @@ try {
       return 1;`);
     await click('.modal [data-action="ui:ok"]');
     const toast = await lastToast();
-    check('指定页输入「' + (input || '（空）') + '」：被拦住（' + expect + '）',
+    check('个别页输入「' + (input || '（空）') + '」：被拦住（' + expect + '）',
       toast.indexOf(expect) >= 0 &&
       (await page.evaluate("return !!document.querySelector('.modal');")),
       '轻提示：' + toast);
@@ -525,13 +666,124 @@ try {
       .filter(function (x) { return (x.pages || []).length === 4; })[0];
     return { total: rec.entries.length, pages: e ? e.pages : null,
       text: e ? App.store.scopeText(e) : '' };`);
-  check('指定页「1,3,5-6」：解析成 4 页并单独成为一条选材，范围文字折叠区间',
+  check('个别页「1,3,5-6」：解析成 4 页并单独成为一条选材，范围文字折叠区间',
     scoped.total === SEED.selections + 3 && scoped.pages && scoped.pages.join() === '1,3,5,6' &&
-    scoped.text.indexOf('第 1、3、5-6 页') === 0,
+    scoped.text.indexOf('第 1、3、5-6 页') >= 0,
     scoped.text + '（pages=' + (scoped.pages || []).join(',') + '）');
 
   /* 选材库里「查看」会带上本次选入范围 */
   const shotLib = await page.shot(SHOT_DIR + 'selection-library.png');
+
+  /* ================================================== C2. 一条条目里有多份文件 */
+  console.log('\n【C2】多份文件的条目：先选文件、页码按这一份文件校验');
+  await page.evaluate(`
+    var ms = document.querySelectorAll('.modal');
+    if (ms.length) { var x = ms[ms.length - 1].querySelector('[data-action="ui:close"]'); if (x) x.click(); }
+    return 1;`);
+  await sleep(350);
+  await click('[data-action="sel:pick"]');
+  await sleep(200);
+  const multiEntry = await page.evaluate(`
+    var best = null;
+    Array.prototype.forEach.call(document.querySelectorAll('.pick-table tbody tr.pick-group'), function (tr) {
+      var rows = [], x = tr.nextElementSibling;
+      while (x && x.classList.contains('pick-file-row')) { rows.push(x); x = x.nextElementSibling; }
+      if (rows.length > 1 && (!best || rows.length > best.rows.length)) best = { tr: tr, rows: rows };
+    });
+    if (!best) return null;
+    return { title: best.tr.querySelector('.title-cell').textContent.trim(),
+      groupPages: best.tr.querySelector('td.col-pages').textContent.trim(),
+      files: best.rows.map(function (tr) {
+        return { key: tr.getAttribute('data-id'),
+          name: tr.querySelector('.title-cell').textContent.trim(),
+          pages: tr.querySelector('td.col-pages').textContent.trim() }; }) };`);
+  check('一条条目下有多份文件：列表按「条目行 + 文件行」展开，每份文件带序号与各自页数',
+    !!multiEntry && multiEntry.files.length >= 2 &&
+    multiEntry.files[0].key.indexOf('#1') > 0 && multiEntry.files[1].key.indexOf('#2') > 0 &&
+    /\d+ 页/.test(multiEntry.files[0].pages) &&
+    multiEntry.files.every(function (f) { return /\d+ 页/.test(f.pages); }),
+    multiEntry ? multiEntry.title + '（条目 ' + multiEntry.groupPages + '）：' +
+      multiEntry.files.map(function (f) { return f.key + ' ' + f.name + ' ' + f.pages; }).join('；') : 'ERR 没找到多份文件的条目');
+
+  /* 选第 2 份文件 → 切「个别页」：页码上限＝**这一份文件**的页数（不是条目总页数） */
+  const f2 = multiEntry.files[1];
+  const f2Pages = parseInt(f2.pages, 10);
+  const groupPages = parseInt(multiEntry.groupPages, 10);
+  await pickMaterials([f2.key]);
+  await page.evaluate(`
+    var r = document.querySelector('input[name="sel-scope"][value="pages"]');
+    r.checked = true; r.dispatchEvent(new Event('change', { bubbles: true }));
+    return 1;`);
+  await sleep(300);
+  const hint2 = await page.evaluate("return document.getElementById('sel-scope-hint').textContent.trim();");
+  check('选了第 2 份文件后，个别页的页码上限＝**这一份文件**的页数（不是条目总页数）',
+    hint2.indexOf(f2.name) >= 0 && hint2.indexOf('1 – ' + f2Pages) >= 0 &&
+    f2Pages !== groupPages,
+    hint2);
+
+  /* 用第 2 份文件加「第 2-3 页」→ 落库的 fileNo/file 指向这一份 */
+  await page.evaluate(`
+    document.getElementById('sel-pages').value = '2-3';
+    return 1;`);
+  await page.evaluate("document.querySelector('.modal [data-action=\"ui:ok\"]').click(); return 1;");
+  await sleep(500);
+  const fileEntry = await page.evaluate(`
+    var want = ${JSON.stringify(f2.key)};
+    var e = App.store.selectionOf('${TASK}').entries.filter(function (x) {
+      return x.materialId + '#' + (Number(x.fileNo) || 1) === want; })[0];
+    return e ? { fileNo: e.fileNo, file: e.file ? e.file.name : '', pageCount: e.pageCount,
+      scope: App.store.scopeText(e), pages: e.pages } : null;`);
+  check('加入的是「这一份文件 + 第 2-3 页」：选材记录里 fileNo / file / 页数上限都指向该文件',
+    !!fileEntry && fileEntry.fileNo === 2 && fileEntry.file === f2.name &&
+    fileEntry.pageCount === f2Pages && fileEntry.pages.join() === '2,3' &&
+    fileEntry.scope.indexOf(f2.name) === 0,
+    fileEntry ? ('#' + fileEntry.fileNo + ' ' + fileEntry.file + '｜' + fileEntry.scope) : 'ERR 没找到该条选材');
+
+  /* 同一素材的**另一份文件**还能单独加入（判重按"素材 + 文件 + 范围"） */
+  await click('[data-action="sel:pick"]');
+  await sleep(200);
+  await pickMaterials([multiEntry.files[0].key]);
+  await page.evaluate("document.querySelector('.modal [data-action=\"ui:ok\"]').click(); return 1;");
+  await sleep(500);
+  const bothFiles = await page.evaluate(`
+    var want = ${JSON.stringify(multiEntry.files[0].key)};
+    var es = App.store.selectionOf('${TASK}').entries.filter(function (x) {
+      return x.materialId === want.split('#')[0]; });
+    return { n: es.length, fileNos: es.map(function (x) { return Number(x.fileNo) || 1; }),
+      scopes: es.map(function (x) { return App.store.scopeText(x); }) };`);
+  check('同一条素材的两份文件可以分别加入（判重按「素材 + 文件 + 范围」）',
+    bothFiles.n === 2 && bothFiles.fileNos.join() === '1,2' &&
+    bothFiles.scopes[0].indexOf(multiEntry.files[0].name) === 0,
+    bothFiles.n + ' 条：' + bothFiles.scopes.join('；'));
+
+  /* 「查看」里能看全这条条目的所有文件 */
+  await click('[data-action="sel:pick"]');
+  await sleep(200);
+  await page.evaluate(`
+    var grp = null;
+    Array.prototype.forEach.call(document.querySelectorAll('.pick-table tbody tr.pick-group'), function (tr) {
+      if (!grp && tr.textContent.indexOf(${JSON.stringify(multiEntry.title)}) >= 0) grp = tr; });
+    grp.querySelector('[data-action="sel:pick-view"]').click();
+    return 1;`);
+  await sleep(450);
+  const viewFiles = await page.evaluate(`
+    var modals = document.querySelectorAll('.modal');
+    var v = modals[modals.length - 1];
+    var rows = v.querySelectorAll('.mv-file-table tbody tr');
+    return { n: rows.length, head: v.querySelector('.mv-sec-note') ? v.querySelector('.mv-sec-note').textContent.trim() : '',
+      first: rows.length ? rows[0].textContent.replace(/\s+/g, ' ').trim() : '' };`);
+  check('「查看」里把这条条目的全部文件列成清单（不再只显示一个文件）',
+    viewFiles.n >= 2 && viewFiles.head.indexOf('份文件') > 0,
+    viewFiles.head + '｜' + viewFiles.first);
+  await page.evaluate(`
+    var ms = document.querySelectorAll('.modal');
+    for (var i = ms.length - 1; i >= 0; i--) {
+      var x = ms[i].querySelector('[data-action="ui:close"], [data-action="ui:ok"]');
+      if (x) { x.click(); }
+      if (ms[i].querySelector('.modal-head').textContent.indexOf('选择素材') === 0) break;
+    }
+    return 1;`);
+  await sleep(400);
 
   /* ================================================== D. 移除素材 */
   console.log('\n【D】移除素材（单选 / 多选）');
@@ -673,21 +925,21 @@ try {
   await page.evaluate("App.ui.closeTop(); return 1;");
   await sleep(250);
 
-  /* 从选材库点查看（指定页那条）也要说明范围 */
+  /* 从选材库点查看（个别页那条）也要说明范围 */
   const scopedView = await page.evaluate(`
     var tr = null;
     Array.prototype.forEach.call(document.querySelectorAll('.sel-table tbody tr'), function (r) {
       if (r.querySelector('.col-scope').textContent.indexOf('页') >= 0 &&
           r.querySelector('.col-scope').textContent.indexOf('整个文件') < 0) tr = r;
     });
-    if (!tr) return 'ERR 没有"指定页"的选材';
+    if (!tr) return 'ERR 没有"个别页"的选材';
     tr.querySelector('[data-action="sel:view"]').click();
     return 'ok';`);
   await sleep(450);
   const scopedModal = await page.evaluate(MODAL);
-  check('指定页的选材在查看里标出「本次选入：第 x 页」，不会让人以为整份都选了',
+  check('个别页的选材在查看里标出「本次选入」，不会让人以为整份都选了（多份文件时带文件名）',
     scopedView === 'ok' && scopedModal.text.indexOf('本次选入') >= 0 &&
-    /本次选入\s*第 /.test(scopedModal.text),
+    /本次选入[^第]{0,40}第 /.test(scopedModal.text),
     scopedModal.text.slice(scopedModal.text.indexOf('本次选入'), scopedModal.text.indexOf('本次选入') + 30));
   await page.evaluate("App.ui.closeTop(); return 1;");
   await sleep(250);

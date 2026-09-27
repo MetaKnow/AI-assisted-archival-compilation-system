@@ -6,9 +6,11 @@
         AI 辅助审核编研成果；命中就显示**规则的敏感内容标题**与**编研成果里的命中内容**。
      2) 专业性审核：AI 审核错别字、专业性及常识性错误；模型自动判断，不依赖规则。
         错别字可由 AI 自动修改，并**显示修改信息**（原文 → 改后、位置、时间、操作人）。
-     3) 合规性审核：个人隐私 / 个人信息由模型自动识别；不宜公开内容依托审核规则。
+     3) 合规性审核：**不依赖审核规则**，由模型判定是否涉及知识产权风险、
+        是否涉及个人隐私及个人信息（个人信息给脱敏建议）。
 
-   三个"开始审核"按钮跑的是 js/audit.js 里的**本地模拟审核引擎**（不调大模型）：
+   审核统一由顶部的「一键全部审核」触发（评审要求：去掉三类各自的单独审核按钮），
+   跑的是 js/audit.js 里的**本地模拟审核引擎**（不调大模型）：
    它真的去扫各章正文，所以命中结果与正文内容一一对应，改完再跑命中就会减少。
    ========================================================================== */
 
@@ -36,12 +38,6 @@
   }
 
   function kinds() { return App.audit.KINDS; }
-
-  function runLabel(kind, sum) {
-    var k = sum.kinds[kind];
-    if (!k.ran) return '开始审核';
-    return '重新审核';
-  }
 
   /* ---------------------------------------------------------- 顶部操作区 */
 
@@ -100,7 +96,7 @@
                '</b>、已忽略 <b>' +
                (sum.kinds.political.ignored + sum.kinds.professional.ignored + sum.kinds.compliance.ignored) +
                '</b>；历史修改 <b>' + sum.fixes + '</b> 处')
-            : '还没有跑过审核：点「一键全部审核」或各卡片里的「开始审核」') +
+            : '还没有跑过审核：点顶部的「一键全部审核」（三类一起跑）') +
         '</span>' +
         '<span class="spacer"></span>' +
         '<label class="sr-only" for="rv-status">按状态筛选</label>' +
@@ -192,9 +188,8 @@
       (ran ? U.tag(state.status ? ('筛选出 ' + items.length + ' 项') :
         ('命中 ' + all.length + ' 项：未校定 ' + sum.open + '、已校定 ' + sum.fixed + '、已忽略 ' + sum.ignored),
         sum.open ? 'tag-warn' : 'tag-ok') : U.tag('未审核', '')) +
-      '<button type="button" class="btn btn-sm' + (ran ? '' : ' btn-primary') + '" data-action="audit:run" ' +
-        'data-task="' + esc(t.id) + '" data-kind="' + esc(kind.key) + '">' +
-        icon('scan-text') + runLabel(kind.key, S.auditSummary(t.id)) + '</button>' +
+      /* 评审要求（本轮）：去掉三类各自的"单独审核"按钮 —— 审核统一走顶部的「一键全部审核」，
+         这里只留展开 / 收起（三类卡片仍各自列出命中项与状态） */
       (ran ? '<button type="button" class="btn btn-sm btn-text" data-action="audit:toggle" data-kind="' +
         esc(kind.key) + '">' + (state.open[kind.key] === false ? '展开' : '收起') + '</button>' : '') +
     '</div>';
@@ -202,7 +197,8 @@
     if (!ran) {
       return '<section class="card rv-card rv-' + kind.key + '">' + head +
         '<div class="card-body"><div class="data-note">' + icon('info') +
-          '<span>' + esc(kind.note) + '（<b>' + esc(kind.title) + '</b>：' + esc(kind.basis) + '）</span>' +
+          '<span>' + esc(kind.note) + '（<b>' + esc(kind.title) + '</b>：' + esc(kind.basis) + '）<br>' +
+            '点顶部的「一键全部审核」即可三类一起跑。</span>' +
         '</div></div></section>';
     }
 
@@ -212,7 +208,9 @@
           ? '<div class="rv-list">' + items.map(renderItem).join('') + '</div>'
           : '<div class="data-note">' + icon('check') +
             '<span>' + esc(kind.title) + '未发现问题。</span></div>') +
-        (sum.ran ? '<div class="rv-run-info">本次审核：' +
+        (sum.ran ? '<div class="rv-run-info">' +
+          /* 默认审核结果（写在 mock.AUDIT_RESULTS 里的种子）与"用户自己跑的"要分得清 */
+          (sum.seeded ? '默认审核结果（种子数据）：' : '本次审核：') +
           esc(String(sum.at).slice(0, 19).replace('T', ' ')) + '　·　' + esc(sum.by) +
           '　·　本地模拟 AI（未接大模型）</div>' : '') +
       '</div>';
@@ -281,11 +279,6 @@
   }
 
   function register() {
-    U.register('audit:run', function (ds) {
-      if (!guardPending(ds.task)) return;
-      var r = runOne(ds.task, ds.kind);
-      U.toast('「' + r.title + '」完成：新发现 ' + r.added + ' 项，已有 ' + r.kept + ' 项保留', 'ok');
-    });
     U.register('audit:run-all', function (ds) {
       if (!guardPending(ds.task)) return;
       var rs = ['political', 'professional', 'compliance'].map(function (k) { return runOne(ds.task, k); });

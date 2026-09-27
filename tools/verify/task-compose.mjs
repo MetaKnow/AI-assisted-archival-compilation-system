@@ -665,12 +665,15 @@ try {
   check('素材区不再有下半块的旧文件预览（预览已移到中栏的「素材文件浏览」）',
     !s.oldDock && s.filePane, '旧下半块残留=' + s.oldDock);
 
-  /* 点一份素材 → 中栏浏览它的文件 */
+  /* 点一份素材 → 中栏浏览它的文件（页数取该条选材自己的 pageCount，别写死） */
+  const firstEnt = await page.evaluate(`
+    var e = App.store.selectionOf('${TASK}').entries[0];
+    return e ? { pages: e.pageCount, name: e.file ? e.file.name : '' } : null;`);
   await click('.cp-mat-main[data-id]');
   s = await page.evaluate(SNAP);
-  check('点素材区的文件：中栏开始浏览它（第 1 页 / 共 12 页，上一页禁用），该条在左栏高亮',
+  check('点素材区的文件：中栏开始浏览它（第 1 页 / 共 ' + firstEnt.pages + ' 页，上一页禁用），该条在左栏高亮',
     s.fileEmpty === '' && s.matActive.length > 0 &&
-    s.pageFoot.indexOf('第 1 页 / 共 12 页') === 0 && s.prevDisabled === true &&
+    s.pageFoot.indexOf('第 1 页 / 共 ' + firstEnt.pages + ' 页') === 0 && s.prevDisabled === true &&
     s.nextDisabled === false && s.fileTitle.length > 0,
     '正在浏览「' + s.fileTitle + '」；' + s.pageFoot);
   check('文档类素材：翻页区右侧是「插入本页」，且没有「插入帧」',
@@ -682,7 +685,7 @@ try {
   await click('.cp-file-foot [data-dir="1"]');
   s = await page.evaluate(SNAP);
   check('中栏「下一页」翻到第 2 页（浏览区内的翻页，不弹窗）',
-    s.pageFoot.indexOf('第 2 页 / 共 12 页') === 0 && s.overlayModals === 0, s.pageFoot);
+    s.pageFoot.indexOf('第 2 页 / 共 ' + firstEnt.pages + ' 页') === 0 && s.overlayModals === 0, s.pageFoot);
 
   /* 换成"只选了几页"的那条：翻页范围受选入页限制 */
   const scopedId = await page.evaluate(`
@@ -768,6 +771,99 @@ try {
   const restored = await page.evaluate("return document.getElementById('cp-text').value;");
   check('清空也能撤销（撤销后正文回到清空前）', restored === afterInsert.text,
     '正文 ' + restored.length + ' 字，与清空前一致=' + (restored === afterInsert.text));
+
+  /* ---- AI自动摘录：先弹窗显示 prompt（默认＝本章内容说明），可改 ---- */
+  console.log('\n【E2】AI自动摘录：先弹 prompt（默认＝本章的内容说明，可改）再摘录');
+  await clearToasts();
+  const ex2Before = await page.evaluate(`
+    var st = App.taskCompose.state();
+    var n = App.store.outlineOf('${TASK}').nodes.filter(function (x) { return x.id === st.nodeId; })[0];
+    var e = App.store.selectionOf('${TASK}').entries.filter(function (x) { return x.id === st.materialId; })[0];
+    var ta = document.getElementById('cp-text');
+    return { text: ta.value, note: n ? n.note : '', nodeTitle: n ? n.title : '',
+      material: e ? e.title : '', archiveNo: e ? e.archiveNo : '', page: st.page,
+      len: ta.value.length };`);
+  await click('[data-action="compose:extract-ai"]');
+  const ex2Dlg = await page.evaluate(`
+    var m = document.querySelector('.modal');
+    if (!m) return null;
+    var ta = document.getElementById('cp-text');
+    return { head: m.querySelector('.modal-head').textContent.trim(),
+      ok: m.querySelector('.modal-foot [data-action="ui:ok"]').textContent.trim(),
+      labels: Array.prototype.map.call(m.querySelectorAll('.field-label'), function (x) {
+        return x.textContent.replace(/\s+/g, '').trim(); }),
+      prompt: m.querySelector('#ex-prompt') ? m.querySelector('#ex-prompt').value : '(无)',
+      quotes: m.querySelectorAll('.pick-quote').length,
+      notes: m.querySelectorAll('.data-note').length,
+      fields: m.querySelectorAll('.modal-body .field').length,
+      text: m.querySelector('.modal-body').textContent.replace(/\s+/g, ' ').trim(),
+      bodyLen: ta.value.length };`);
+  check('点「AI自动摘录」：先弹窗（正文没变），标题写明插入到哪一章',
+    !!ex2Dlg && ex2Dlg.bodyLen === ex2Before.len &&
+    ex2Dlg.head.indexOf('AI自动摘录') === 0 &&
+    ex2Dlg.head.indexOf(ex2Before.nodeTitle) > 0 && ex2Dlg.ok === '按提示词摘录并插入',
+    ex2Dlg ? ex2Dlg.head : 'ERR 没有弹窗');
+  check('弹窗里**只有提示词**一块：摘录来源 / 这一页的原文预览 / 本地模拟摘录说明都已去掉（评审要求）',
+    ex2Dlg.fields === 1 && ex2Dlg.labels.length === 1 &&
+    ex2Dlg.labels[0].indexOf('提示词') === 0 &&
+    ex2Dlg.text.indexOf('摘录来源') < 0 && ex2Dlg.text.indexOf('这一页的原文') < 0 &&
+    ex2Dlg.text.indexOf('本地模拟摘录') < 0 &&
+    ex2Dlg.quotes === 0 && ex2Dlg.notes === 0,
+    '字段：' + ex2Dlg.labels.join('｜') + '；pick-quote ' + ex2Dlg.quotes + ' 个 / data-note ' + ex2Dlg.notes + ' 个');
+  check('提示词**默认就是本章的内容说明**（与大纲里的 note 逐字一致）',
+    ex2Before.note.length > 0 && ex2Dlg.prompt === ex2Before.note,
+    'note=' + ex2Before.note.slice(0, 34) + '…／提示词=' + ex2Dlg.prompt.slice(0, 34) + '…');
+  const shotExtract = await page.shot(SHOT_DIR + 'compose-extract-prompt.png');
+
+  /* 提示词是空的 → 拦住（弹窗不关、正文不变） */
+  await page.evaluate("document.getElementById('ex-prompt').value = ''; return 1;");
+  await click('.modal [data-action="ui:ok"]');
+  const ex2Empty = await page.evaluate(`
+    var l = document.querySelectorAll('.toast');
+    var ta = document.getElementById('cp-text');
+    return { open: !!document.querySelector('.modal'),
+      toast: l.length ? l[l.length - 1].textContent.trim() : '', len: ta.value.length };`);
+  check('提示词清空后确认：被拦住（弹窗不关、正文长度不变）',
+    ex2Empty.open && ex2Empty.toast.indexOf('请先填写提示词') >= 0 && ex2Empty.len === ex2Before.len,
+    ex2Empty.toast);
+
+  /* 改成自定义提示词 → 确认 → 按提示词摘录并插入（含出处与摘录要求） */
+  await page.evaluate(`
+    document.getElementById('ex-prompt').value = '只摘录涉及经费与学额的数据，保留原始计量单位';
+    document.getElementById('ex-prompt').dispatchEvent(new Event('input', { bubbles: true }));
+    return 1;`);
+  const ex2Tip = await page.evaluate("return document.getElementById('ex-default').textContent.trim();");
+  check('提示词可编辑：改过之后有一句"提示词已修改"的提示（默认值不是硬编码示例）',
+    ex2Tip.indexOf('提示词已修改') >= 0, ex2Tip);
+  await click('.modal [data-action="ui:ok"]');
+  await sleep(500);
+  const ex2After = await page.evaluate(`
+    var st = App.taskCompose.state();
+    var ch = App.store.chapterOf('${TASK}', st.nodeId);
+    var l = document.querySelectorAll('.toast');
+    return { len: ch.text.length, tail: ch.text.slice(-160),
+      toast: l.length ? l[l.length - 1].textContent.trim() : '',
+      dirty: !document.getElementById('cp-dirty').classList.contains('hidden') };`);
+  check('确认后：按提示词摘出一段插到光标处（带《题名》与档号/页码出处 + 摘录要求），并落库',
+    ex2After.len > ex2Before.len && ex2After.tail.indexOf('【自动摘录】') > 0 &&
+    ex2After.tail.indexOf('摘自《' + ex2Before.material + '》') > 0 &&
+    ex2After.tail.indexOf(ex2Before.archiveNo) > 0 &&
+    ex2After.tail.indexOf('（摘录要求：只摘录涉及经费与学额的数据') > 0 &&
+    ex2After.dirty && ex2After.toast.indexOf('已按提示词摘录') >= 0,
+    ex2After.toast + '｜正文 ' + ex2Before.len + ' → ' + ex2After.len + ' 字');
+
+  /* 没点素材时给出明确提示，不静默 */
+  await clearToasts();
+  await page.evaluate(`
+    var seg = document.querySelector('[data-action="compose:tab"][data-pane="materials"]');
+    if (seg) seg.click();
+    return 1;`);
+  await sleep(250);
+  const noMat = await page.evaluate(`
+    var st = App.taskCompose.state();
+    return { materialId: st.materialId };`);
+  check('摘录前已经选中素材（界面上的"摘录来源"才不会是空的）', !!noMat.materialId,
+    '正在浏览 ' + noMat.materialId);
 
   check('打开文件后「插入本页」按钮已变为可用（A 段验过：未开文件时是禁用态）',
     beforeInsert.disabled === null &&     // 读的是 aria-disabled 属性：属性不存在=可用
@@ -1043,7 +1139,7 @@ try {
     footSeed.text.indexOf('种子 ' + footSeed.version) >= 0,
     footSeed.text.slice(0, 52));
   check('截图已生成', true,
-    [shotScreen, shotFile, shotFrame].map(function (f) { return f.split('/').slice(-1)[0]; }).join('、'));
+    [shotScreen, shotFile, shotFrame, shotExtract].map(function (f) { return f.split('/').slice(-1)[0]; }).join('、'));
   const errs = page.errors();
   check('全程没有 JS 异常 / console.error', errs.length === 0,
     errs.length ? 'ERR ' + errs.map(function (e) { return e.kind + ': ' + e.text; }).join(' | ')

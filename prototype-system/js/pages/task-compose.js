@@ -1165,12 +1165,78 @@
       });
     });
 
-    /* 摘录按钮：本轮只生成按钮（评审要求），点了说清楚 */
+    /* ---------------- 摘录 ---------------- */
+
     U.register('compose:extract-manual', function () {
-      U.toast('「手动摘录」的编排界面尚未生成：本轮先生成按钮与三栏工作台', 'warn');
+      U.toast('「手动摘录」的编排界面尚未生成：本轮先做「AI自动摘录」（自动摘录也要先过提示词）', 'warn');
     });
+
+    /**
+     * AI自动摘录（评审要求）：点按钮**先弹窗显示 prompt** ——
+     * 默认填**当前章节的内容说明**（大纲节点的 `note`，也就是"这一章要写什么"），允许用户改写；
+     * 确认后按提示词从**正在浏览的这一份素材**里摘出一段，插到编排区光标处。
+     * 原型用本地模拟摘录（不调用大模型），界面上有明确标注。
+     */
     U.register('compose:extract-ai', function () {
-      U.toast('「AI自动摘录」的编排界面尚未生成：本轮先生成按钮与三栏工作台', 'warn');
+      var n = nodes().filter(function (x) { return x.id === state.nodeId; })[0];
+      if (!n) { U.toast('先在左侧大纲里点一个章节，再自动摘录', 'warn'); return; }
+      var e = allEntries().filter(function (x) { return x.id === state.materialId; })[0];
+      if (!e) { U.toast('先在左侧切到「素材区」并点一份素材，再自动摘录', 'warn'); return; }
+      if (isVideo(e)) { U.toast('视频素材请用「插入帧」；自动摘录针对文档类素材', 'warn'); return; }
+
+      var cat = S.catalogByArchiveNo(e.archiveNo);
+      /* 默认提示词＝本章的内容说明（大纲里给这一章写的"主要内容说明"） */
+      var defPrompt = String(n.note || '').trim();
+      var srcText = String((cat && (cat.fullText || cat.summary)) || '').trim();
+
+      U.modal({
+        title: 'AI自动摘录 · 插入到「' + esc(n.title) + '」',
+        width: 680,
+        okText: '按提示词摘录并插入',
+        body:
+          /* 评审要求（本轮）：弹窗只留 prompt —— 原来的「摘录来源」「这一页的原文（预览）」
+             与"本地模拟摘录"的说明块都没用，已去掉（来源信息在浏览区上方本来就看得见）。 */
+          '<div class="field"><label class="field-label" for="ex-prompt">' +
+              '提示词（默认＝本章的内容说明，可直接改）<span class="req">*</span></label>' +
+            '<textarea class="textarea input-sm" id="ex-prompt" rows="5" maxlength="500" ' +
+              'placeholder="例如：只摘录涉及经费与学额的数据，并保留原始计量单位">' +
+              esc(defPrompt) + '</textarea>' +
+            '<div class="field-extra">' +
+              (defPrompt
+                ? '默认取自大纲里「' + esc(n.title) + '」的<b>主要内容说明</b>。'
+                : '这一章在大纲里还没有写「主要内容说明」，请自己写一段摘录要求。') +
+              '可以改成取舍要求（例如"只要数字与年份"）。</div>' +
+            '<div class="field-extra" id="ex-default"></div>' +
+          '</div>',
+        /* ⚠️ 与 AI生成/AI扩写同一套：onOk 返回 false 才留得住弹窗 */
+        onOk: function (modalEl) {
+          var el = modalEl.querySelector('#ex-prompt');
+          var prompt = el ? el.value.trim() : '';
+          if (!prompt) { U.toast('请先填写提示词（默认是本章的内容说明）', 'warn'); return false; }
+          var quote = srcText
+            ? srcText.slice(0, 140) + (srcText.length > 140 ? '…' : '')
+            : '（该条目未著录原文，原型只做示意：此处应为这一页的档案原文）';
+          var snippet = '【自动摘录】' + quote + '\n' +
+            '—— 摘自《' + e.title + '》' +
+            (e.archiveNo ? '（档号 ' + e.archiveNo + '，第 ' + state.page + ' 页）'
+                         : '（本地上传，第 ' + state.page + ' 页）') + '\n' +
+            '（摘录要求：' + (prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt) + '）\n';
+          insertAtCaret(snippet, 'AI自动摘录');
+          U.toast('已按提示词摘录 ' + quote.length + ' 字（含出处）并插入到「' + n.title + '」', 'ok');
+          return true;
+        }
+      });
+
+      /* 提示词被改过时给一句提示：默认值来自本章的内容说明（不是硬编码的示例） */
+      setTimeout(function () {
+        var box = document.getElementById('ex-prompt');
+        var tip = document.getElementById('ex-default');
+        if (!box || !tip || !defPrompt) return;
+        box.addEventListener('input', function () {
+          tip.textContent = box.value.trim() === defPrompt
+            ? '' : '提示词已修改（默认值＝本章的内容说明，原样保留在提示里）';
+        });
+      }, 30);
     });
   }
 

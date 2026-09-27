@@ -97,7 +97,9 @@
       addedAt: material ? material.addedAt : '',
       addedBy: material ? material.addedBy : '',
       inLibrary: !!material,
-      file: material && material.file ? material.file : null
+      file: material && material.file ? material.file : null,
+      files: material ? material.files : (cat ? cat.files : null),
+      material: material || null
     };
   }
 
@@ -189,17 +191,42 @@
           : '') +
       '</div>';
 
+    /* 一条条目下可能有多份文件（评审要求）：逐份列出来，预览只对第 1 份做示意 */
+    var fileList = v.digitized
+      ? S.materialFileList({
+          id: '', archiveNo: v.archiveNo, title: v.title, file: v.file,
+          files: v.files, pages: v.pages
+        })
+      : [];
+    var multiFiles = fileList.length > 1;
     var fileBlock =
       '<div class="mv-sec">' +
-        '<div class="mv-sec-head">' + icon('file-text') + '文件 · 电子文件</div>' +
-        '<div class="form-table form-table-read">' +
-          readRow('文件名', f.name) +
-          readRow('文件格式', f.format) +
-          readRow('文件大小', f.size) +
-          readRow('页数', f.pages === '—' ? '' : f.pages + ' 页') +
-          readRow('存储位置', f.path, 'long') +
-          readRow('挂接状态', f.linked ? '已挂接' : '未挂接') +
-        '</div>' +
+        '<div class="mv-sec-head">' + icon('file-text') + '文件 · 电子文件' +
+          (multiFiles ? '<span class="mv-sec-note">共 ' + fileList.length + ' 份文件</span>' : '') + '</div>' +
+        (multiFiles
+          ? '<div class="table-scroll"><table class="table mv-file-table">' +
+              '<thead><tr><th class="col-idx">序号</th><th>文件名</th>' +
+                '<th class="col-cat">格式</th><th class="col-pages">页数</th><th>说明</th></tr></thead>' +
+              '<tbody>' + fileList.map(function (x) {
+                return '<tr><td class="col-idx tnum">' + x.no + '</td>' +
+                  '<td>' + esc(x.name) + '</td>' +
+                  '<td>' + esc(extOf(x.name) || '—') + '</td>' +
+                  '<td class="tnum">' + (x.pages ? x.pages + ' 页' : '—') + '</td>' +
+                  '<td>' + esc(x.note || '') + '</td></tr>';
+              }).join('') + '</tbody></table></div>'
+          : '<div class="form-table form-table-read">' +
+              readRow('文件名', f.name) +
+              readRow('文件格式', f.format) +
+              readRow('文件大小', f.size) +
+              readRow('页数', f.pages === '—' ? '' : f.pages + ' 页') +
+              readRow('存储位置', f.path, 'long') +
+              readRow('挂接状态', f.linked ? '已挂接' : '未挂接') +
+            '</div>') +
+        (multiFiles
+          ? '<div class="data-note">' + icon('info') + '<span>这条素材条目下有 <b>' + fileList.length +
+            '</b> 份文件；加入选材库时按**文件**选，页码也按所选文件的页数校验。存储位置：' +
+            esc(f.path) + '</span></div>'
+          : '') +
         '<div class="mv-preview">' +
           '<div class="mv-preview-head">' +
             '<span>' + icon('eye') + '文件预览</span>' +

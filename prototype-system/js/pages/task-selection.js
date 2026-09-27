@@ -24,11 +24,12 @@
   var state = {
     /* 选择素材弹窗里的筛选 */
     pickTag: '',
+    pickCategory: '',
     pickKeyword: '',
     pickSelected: {},
     /* 选材库列表的勾选 */
     selected: {},
-    /* 加入方式：all＝整个文件 | pages＝指定页 */
+    /* 加入方式：all＝整个文件 | pages＝个别页（评审口径，原先叫"指定页"） */
     scopeMode: 'all',
     scopePages: '',
     /* 上传素材表单里选中的文件 */
@@ -60,9 +61,50 @@
 
   /** 素材的页数：优先用素材自身，其次回查档案目录（都没有就返回 0＝未知） */
   var VIDEO_EXT = /^.*\.(mp4|mov|avi|mkv|wmv|flv|m4v|webm|mpg|mpeg)$/i;
+  /** 一份文件是不是视频：看扩展名或时长（条目有多份文件时，要按**选中的那一份**判断） */
+  function isVideoFile(file) {
+    if (!file) return false;
+    return VIDEO_EXT.test(String(file.name || '')) || Number(file.duration || 0) > 0;
+  }
+
   /** 视频类素材：没有页码，只能整份加入（「插入帧」也只对它们开放） */
   function isVideoMaterial(m) {
-    return !!(m && m.file && VIDEO_EXT.test(String(m.file.name || '')));
+    return isVideoFile((S.materialFileList(m)[0] || null));
+  }
+
+  /* ---- 「一条条目里可能有多份文件」（评审修正）：选择与判重都以**文件**为单位 ----
+     选中项的键＝`素材编号#文件序号`，值＝true。 */
+
+  function pickKey(materialId, fileNo) { return materialId + '#' + (Number(fileNo) || 1); }
+
+  function pickKeyIds() {
+    return Object.keys(state.pickSelected).filter(function (k) { return state.pickSelected[k]; });
+  }
+
+  /** 选中的文件：[{ key, material, file }]（素材被删、文件序号对不上就自动丢掉） */
+  function pickedFiles() {
+    var out = [];
+    pickKeyIds().forEach(function (k) {
+      var parts = String(k).split('#');
+      var m = S.getMaterial(parts[0]);
+      if (!m) return;
+      var f = S.materialFileOf(m, parseInt(parts[1], 10));
+      if (!f) return;
+      out.push({ key: k, material: m, file: f });
+    });
+    return out;
+  }
+
+  /** 某份文件的"页数/时长"文字（视频显示时长） */
+  function fileMetaText(file) {
+    if (isVideoFile(file)) {
+      var n = Math.floor(Number(file.duration) || 0);
+      if (!n) return '视频';
+      var h = Math.floor(n / 3600), mm = Math.floor((n % 3600) / 60), ss = n % 60;
+      function pad(x) { return x < 10 ? '0' + x : String(x); }
+      return '视频 · ' + (h ? h + ':' : '') + pad(mm) + ':' + pad(ss);
+    }
+    return file.pages ? file.pages + ' 页' : '未著录';
   }
 
   /** 视频的"页数"位置改显示时长；没有时长就写"视频" */
@@ -72,12 +114,6 @@
     var h = Math.floor(n / 3600), mm = Math.floor((n % 3600) / 60), ss = n % 60;
     function pad(x) { return x < 10 ? '0' + x : String(x); }
     return '视频 · ' + (h ? h + ':' : '') + pad(mm) + ':' + pad(ss);
-  }
-
-  function pageCountOf(material) {
-    if (!material) return 0;
-    var cat = S.catalogByArchiveNo(material.archiveNo);
-    return Number((cat && cat.pages) || material.pages || 0);
   }
 
   function entries(taskId) { return S.selectionOf(taskId).entries; }
@@ -134,7 +170,7 @@
         (n ? '' : ' aria-disabled="true"') + '>' +
         icon('trash') + '移除素材' + (n ? '（' + n + '）' : '') + '</button>' +
       '<span class="toolbar-note">选材库共 ' + list.length + ' 条' +
-        (list.length ? '（整份 ' + whole + ' 条，指定页 ' + part + ' 条）' : '') + '</span>' +
+        (list.length ? '（整个文件 ' + whole + ' 条，个别页 ' + part + ' 条）' : '') + '</span>' +
       '<span class="spacer"></span>' +
       '<span class="ol-hint">选材库是按编研任务组织的；移除只影响本任务的选材，不会删除素材库里的素材</span>' +
     '</div>';
@@ -189,7 +225,7 @@
       '<div class="card-head">' +
         '<span>第 2 阶段 · 确定选材</span>' +
         '<span class="spacer"></span>' +
-        '<span class="head-note">选材库按编研任务组织；一条选材 = 一份素材 + 选入范围（整份或指定页）</span>' +
+        '<span class="head-note">选材库按编研任务组织；一条选材 = 一份文件 + 选入范围（整个文件或个别页）</span>' +
       '</div>' +
       '<div class="card-body">' +
         renderToolbar(t) +
@@ -207,10 +243,27 @@
   function pickRows() {
     var kw = state.pickKeyword.trim().toLowerCase();
     return S.materials().filter(function (m) {
+      if (state.pickCategory && (m.category || '') !== state.pickCategory) return false;
       if (state.pickTag && (m.tagIds || []).indexOf(state.pickTag) < 0) return false;
       if (kw && (m.title + ' ' + (m.note || '')).toLowerCase().indexOf(kw) < 0) return false;
       return true;
     });
+  }
+
+  /** 门类下拉：只列素材库里实际出现的门类（带件数），与「素材管理」的筛选口径一致 */
+  function pickCategoryOptions() {
+    var count = {};
+    S.materials().forEach(function (m) {
+      var c = m.category || '';
+      if (c) count[c] = (count[c] || 0) + 1;
+    });
+    return ['<option value="">全部门类</option>'].concat(
+      (App.mock.ARCHIVE_CATEGORIES || []).filter(function (c) { return count[c]; })
+        .map(function (c) {
+          return '<option value="' + esc(c) + '"' + (state.pickCategory === c ? ' selected' : '') + '>' +
+            esc(c) + '（' + count[c] + '）</option>';
+        })
+    ).join('');
   }
 
   function pickTagOptions() {
@@ -223,73 +276,117 @@
     return opts.join('');
   }
 
+  /**
+   * 弹窗里的列表＝**两级**：一条素材条目一行（组行，不勾选），它下面的**每份文件各一行**（可勾选）。
+   * 评审修正："一条条目里可能有多份文件" —— 所以先选文件、再选这份文件是「整个文件」还是「个别页」。
+   * 组行保留素材名称/门类/标签/文件数与「查看」，文件行显示文件名与**这一份文件**的页数（视频显示时长）。
+   */
   function pickTableHtml() {
     var rows = pickRows();
     if (!rows.length) return '<div class="pick-empty">没有符合条件的素材</div>';
+    var body = [], seq = 0;
+    rows.forEach(function (m) {
+      seq += 1;
+      var files = S.materialFileList(m);
+      var total = files.reduce(function (a, f) { return a + (Number(f.pages) || 0); }, 0);
+      body.push('<tr class="pick-group">' +
+        '<td class="col-check"></td>' +
+        '<td class="col-idx tnum">' + seq + '</td>' +
+        '<td class="col-title"><span class="title-cell" title="' + esc(m.title) + '">' +
+          esc(m.title) + '</span>' +
+          (files.length > 1 ? U.tag('文件 ' + files.length + ' 份', 'tag-accent') : '') + '</td>' +
+        '<td class="col-cat">' + esc(m.category || '未著录') + '</td>' +
+        '<td class="col-tags">' + tagChips(m.tagIds) + '</td>' +
+        '<td class="col-pages tnum">' +
+          (isVideoMaterial(m) ? esc(durationText(m)) : (total ? total + ' 页' : '未著录')) + '</td>' +
+        '<td class="col-actions"><div class="row-actions">' +
+          '<button type="button" class="btn btn-sm btn-text" data-action="sel:pick-view" ' +
+            'data-id="' + esc(m.id) + '" title="查看该素材的目录与文件">' + icon('eye') + '查看</button>' +
+        '</div></td>' +
+      '</tr>');
+      files.forEach(function (f) {
+        var key = pickKey(m.id, f.no);
+        var on = !!state.pickSelected[key];
+        body.push('<tr class="pick-file-row' + (on ? ' selected' : '') + '" ' +
+            'data-action="sel:pick-row" data-id="' + esc(key) + '" ' +
+            'title="点击整行＝选择这份文件">' +
+          '<td class="col-check"><input type="checkbox" data-change="sel:pick-select" ' +
+            'data-id="' + esc(key) + '"' + (on ? ' checked' : '') +
+            ' aria-label="选择 ' + esc(f.name) + '"></td>' +
+          '<td class="col-idx"></td>' +
+          '<td class="col-title pick-file-name"><span class="pick-file-no">' + f.no + '</span>' +
+            '<span class="title-cell" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
+            (f.note ? '<span class="pick-file-note">' + esc(f.note) + '</span>' : '') + '</td>' +
+          '<td class="col-cat"></td>' +
+          '<td class="col-tags"></td>' +
+          '<td class="col-pages tnum">' + esc(fileMetaText(f)) + '</td>' +
+          '<td class="col-actions"></td>' +
+        '</tr>');
+      });
+    });
     return '<div class="table-scroll pick-table"><table class="table">' +
       '<thead><tr>' +
         '<th class="col-check"></th>' +
         '<th class="col-idx">序号</th>' +
-        '<th class="col-title">素材名称</th>' +
+        '<th class="col-title">素材名称 / 文件</th>' +
         '<th class="col-cat">档案门类</th>' +
         '<th class="col-tags">素材标签</th>' +
         '<th class="col-pages">页数</th>' +
         '<th class="col-actions">操作</th>' +
-      '</tr></thead><tbody>' +
-      rows.map(function (m, i) {
-        var on = !!state.pickSelected[m.id];
-        var pc = pageCountOf(m);
-        return '<tr' + (on ? ' class="selected"' : '') + '>' +
-          '<td class="col-check"><input type="checkbox" data-change="sel:pick-select" ' +
-            'data-id="' + esc(m.id) + '"' + (on ? ' checked' : '') +
-            ' aria-label="选择 ' + esc(m.title) + '"></td>' +
-          '<td class="col-idx tnum">' + (i + 1) + '</td>' +
-          '<td class="col-title"><span class="title-cell" title="' + esc(m.title) + '">' +
-            esc(m.title) + '</span></td>' +
-          '<td class="col-cat">' + esc(m.category || '未著录') + '</td>' +
-          '<td class="col-tags">' + tagChips(m.tagIds) + '</td>' +
-          '<td class="col-pages tnum">' +
-            esc(isVideoMaterial(m) ? durationText(m) : (pc ? pc + ' 页' : '未著录')) + '</td>' +
-          '<td class="col-actions"><div class="row-actions">' +
-            '<button type="button" class="btn btn-sm btn-text" data-action="sel:pick-view" ' +
-              'data-id="' + esc(m.id) + '" title="查看该素材的目录与文件">' + icon('eye') + '查看</button>' +
-          '</div></td>' +
-        '</tr>';
-      }).join('') +
-      '</tbody></table></div>';
+      '</tr></thead><tbody>' + body.join('') + '</tbody></table></div>';
   }
 
-  /** 加入方式（整份 / 指定页）：选了素材才知道页数校验的边界，所以就地提示 */
+  /**
+   * 侧栏＝「先选文件、再选范围」两步（评审要求）：
+   *   ① 在左侧列表里选择文件（点整行或勾选框，可多选）；
+   *   ② 再决定这份/这些文件是「整个文件」加入，还是只取「个别页」。
+   * 没选文件时范围那一步是禁用的 —— 顺序在界面上就是硬性的，不用靠提示文字提醒。
+   */
   function scopeHtml() {
-    var picked = Object.keys(state.pickSelected).filter(function (id) { return state.pickSelected[id]; });
-    var first = picked.length ? S.getMaterial(picked[0]) : null;
+    var picked = pickedFiles();
+    var first = picked.length ? picked[0] : null;
+    var ready = picked.length > 0;
     var hint;
     if (state.scopeMode === 'pages') {
-      /* 页码是针对**某一份文件**的，所以指定页只允许单选（评审要求） */
-      if (!picked.length) {
-        hint = '指定页需要先勾选**一份**素材（页码只针对这一份文件生效）';
-      } else if (isVideoMaterial(first)) {
-        hint = '《' + first.title + '》是视频素材（没有页码），只能用「整个文件」加入';
+      /* 页码是针对**某一份文件**的，所以个别页只允许单选（评审要求） */
+      if (!ready) {
+        hint = '请先在左侧列表里选择**一份**文件（页码只针对这一份文件生效）';
+      } else if (isVideoFile(first.file)) {
+        hint = '《' + first.file.name + '》是视频文件（没有页码），只能用「整个文件」加入';
       } else {
-        var pc = pageCountOf(first);
-        hint = '页码针对《' + first.title + '》：' +
-          (pc ? '会在 1 – ' + pc + ' 页之间校验' : '这份素材未著录页数，页码不做上限校验');
+        var pc = Number(first.file.pages) || 0;
+        hint = '页码针对《' + first.file.name + '》：' +
+          (pc ? '会在 1 – ' + pc + ' 页之间校验' : '这份文件未著录页数，页码不做上限校验') +
+          (picked.length > 1 ? '　（个别页一次只能选一份文件）' : '');
       }
+    } else if (ready) {
+      hint = '已选择 ' + picked.length + ' 份文件，都会以「整个文件」加入选材库';
     } else {
-      hint = picked.length
-        ? '已勾选 ' + picked.length + ' 份素材，都会以「整个文件」加入选材库'
-        : '先在左侧勾选要加入选材库的素材（可以多选）';
+      hint = '先在左侧列表里选择文件：点整行或勾选框都行（可以多选）';
+    }
+
+    function radio(value, label) {
+      var on = state.scopeMode === value;
+      return '<label class="check' + (ready ? '' : ' is-disabled') + '">' +
+        '<input type="radio" name="sel-scope" value="' + value + '"' + (on ? ' checked' : '') +
+        (ready ? '' : ' disabled') + ' data-change="sel:scope-mode"> ' + label + '</label>';
     }
 
     return '<div class="scope-box">' +
-      '<div class="field-label">加入方式</div>' +
-      '<label class="check"><input type="radio" name="sel-scope" value="all"' +
-        (state.scopeMode === 'all' ? ' checked' : '') + ' data-change="sel:scope-mode">' +
-        ' 整个文件（可多选）</label>' +
-      '<label class="check"><input type="radio" name="sel-scope" value="pages"' +
-        (state.scopeMode === 'pages' ? ' checked' : '') + ' data-change="sel:scope-mode">' +
-        ' 指定页（只能选一份素材）</label>' +
-      (state.scopeMode === 'pages'
+      '<div class="scope-step">' +
+        '<span class="scope-step-no">1</span>选择文件' +
+        '<span class="scope-step-state" id="pick-step-state">' +
+          (ready ? '已选 ' + picked.length + ' 份' : '尚未选择') + '</span>' +
+      '</div>' +
+      '<div class="field-extra">在左侧列表里点**文件行**（或勾选框）选择文件 —— ' +
+        '一条素材条目下可能有多份文件，先选文件、再选范围（可多选）。</div>' +
+      '<div class="scope-step">' +
+        '<span class="scope-step-no">2</span>选择加入范围' +
+        (ready ? '' : '<span class="scope-step-state">先选文件</span>') +
+      '</div>' +
+      radio('all', '整个文件' + (ready ? '（可多选）' : '（可多选，先选文件）')) +
+      radio('pages', '个别页' + (ready ? '（只能选一份文件）' : '（只能选一份文件，先选文件）')) +
+      (state.scopeMode === 'pages' && ready
         ? '<div class="scope-pages">' +
             '<label class="sr-only" for="sel-pages">要加入的页码</label>' +
             '<input class="input input-sm" id="sel-pages" maxlength="60" ' +
@@ -301,12 +398,24 @@
     '</div>';
   }
 
-  /** 指定页模式下把勾选裁到只剩一份（保留 keepId，没有就保留第一个） */
-  function trimToSingle(keepId) {
-    var picked = Object.keys(state.pickSelected).filter(function (id) { return state.pickSelected[id]; });
+  /** 勾上/取消一份文件（键＝素材#文件）：state、行高亮、勾选框三处一起同步 */
+  function applyPick(key, on) {
+    if (on) state.pickSelected[key] = true;
+    else delete state.pickSelected[key];
+    var root = document.getElementById('main') || document;
+    var modal = document.querySelector('.modal') || root;
+    var cb = modal.querySelector('.pick-table input[data-change="sel:pick-select"][data-id="' + key + '"]');
+    if (cb) cb.checked = !!on;
+    var tr = cb && cb.closest ? cb.closest('tr') : null;
+    if (tr) tr.classList.toggle('selected', !!on);
+  }
+
+  /** 个别页模式下把选择裁到只剩一份文件（保留 keepKey，没有就保留第一个） */
+  function trimToSingle(keepKey) {
+    var picked = pickKeyIds();
     if (picked.length <= 1) return null;
-    var keep = keepId && picked.indexOf(keepId) >= 0 ? keepId : picked[0];
-    picked.forEach(function (id) { if (id !== keep) delete state.pickSelected[id]; });
+    var keep = keepKey && picked.indexOf(keepKey) >= 0 ? keepKey : picked[0];
+    picked.forEach(function (k) { if (k !== keep) delete state.pickSelected[k]; });
     /* DOM 里的复选框也要跟着变（弹窗不是整页重渲染） */
     Array.prototype.forEach.call(document.querySelectorAll('.pick-table tbody tr'), function (tr) {
       var cb = tr.querySelector('input[data-change="sel:pick-select"]');
@@ -320,6 +429,7 @@
 
   function openPicker(t) {
     state.pickTag = '';
+    state.pickCategory = '';
     state.pickKeyword = '';
     state.pickSelected = {};
     state.scopeMode = 'all';
@@ -327,13 +437,16 @@
 
     U.modal({
       title: '选择素材 · 加入「' + t.topicName + '」的选材库',
-      width: 1040,
+      width: 1140,          /* 多了「档案门类」筛选 + 两步式侧栏，宽度放宽一点，操作列不再被挤掉 */
       okText: '加入选材库',
       cancelText: '取消',
       body:
         '<div class="pick-layout">' +
           '<div class="pick-main">' +
             '<div class="toolbar">' +
+              '<label class="sr-only" for="pick-cat">按档案门类筛选</label>' +
+              '<select class="select select-inline" id="pick-cat" data-change="sel:pick-cat" ' +
+                'title="按档案门类筛选素材">' + pickCategoryOptions() + '</select>' +
               '<label class="sr-only" for="pick-tag">按素材标签筛选</label>' +
               '<select class="select select-inline" id="pick-tag" data-change="sel:pick-tag">' +
                 pickTagOptions() + '</select>' +
@@ -349,11 +462,15 @@
           '<div class="pick-side" id="pick-side">' + scopeHtml() + '</div>' +
         '</div>' +
         '<div class="data-note" style="margin-top:var(--s3)">' + icon('info') +
-          '<span>素材数据与「编研素材库 / 素材管理」完全一致：可以<b>查看目录与文件</b>、按标签筛选。' +
+          '<span><b>先选文件、再选范围</b>：左侧列表是两级的 —— 一条素材条目下可能<b>有多份文件</b>' +
+          '（列表里点<b>文件行</b>或勾选框选择要加入的那一份），再在右侧决定是「整个文件」还是只取「个别页」；' +
+          '页码按<b>这一份文件</b>的页数校验。' +
+          '素材数据与「编研素材库 / 素材管理」完全一致：可以<b>查看目录与文件</b>、' +
+          '<b>按档案门类或素材标签筛选</b>。' +
           '同一条素材可以以不同范围重复加入（整份一次、某几页再一次），按「素材 + 范围」判重。</span></div>',
       onOk: function (el) {
-        var ids = Object.keys(state.pickSelected).filter(function (id) { return state.pickSelected[id]; });
-        if (!ids.length) { U.toast('请先勾选要加入的素材', 'warn'); return false; }
+        var picked = pickedFiles();
+        if (!picked.length) { U.toast('请先选择要加入的文件', 'warn'); return false; }
 
         var pages = [];
         if (state.scopeMode === 'pages') {
@@ -361,29 +478,33 @@
              直接读 state 会把用户刚敲的页码当成空（曾经就这样，四种输入都报"请填写页码"） */
           var input = el.querySelector('#sel-pages');
           state.scopePages = input ? input.value : state.scopePages;
-          /* 视频素材没有页码，只能用「整个文件」加入 */
-          var vid = ids.filter(function (id) { return isVideoMaterial(S.getMaterial(id)); });
+          /* 视频文件没有页码，只能用「整个文件」加入 */
+          var vid = picked.filter(function (p) { return isVideoFile(p.file); });
           if (vid.length) {
-            U.toast('视频素材没有页码，《' + S.getMaterial(vid[0]).title + '》只能用「整个文件」加入', 'warn');
+            U.toast('视频文件没有页码，《' + vid[0].file.name + '》只能用「整个文件」加入', 'warn');
             return false;
           }
-          /* 兜底：正常路径下界面已经把勾选裁到一份，这里再挡一次 */
-          if (ids.length > 1) {
-            U.toast('「指定页」一次只能选一份素材，请只勾选一份或改用「整个文件」', 'warn');
+          /* 兜底：正常路径下界面已经把选择裁到一份，这里再挡一次 */
+          if (picked.length > 1) {
+            U.toast('「个别页」一次只能选一份文件，请只选择一份或改用「整个文件」', 'warn');
             return false;
           }
-          var limit = pageCountOf(S.getMaterial(ids[0]));
+          /* 页码上限＝**这一份文件**的页数（不再是一条素材的总页数） */
+          var limit = Number(picked[0].file.pages) || 0;
           var parsed = parsePages(state.scopePages, limit);
           if (parsed.error) { U.toast(parsed.error, 'warn'); return false; }
           pages = parsed.pages;
         }
 
-        var items = ids.map(function (id) {
-          var m = S.getMaterial(id);
+        var items = picked.map(function (p) {
+          var m = p.material, f = p.file;
           return {
             materialId: m.id, source: 'library', title: m.title, archiveNo: m.archiveNo,
-            category: m.category, tagIds: m.tagIds, file: m.file,
-            pageCount: pageCountOf(m), pages: pages.slice()
+            category: m.category, tagIds: m.tagIds,
+            fileNo: f.no,
+            /* 选材记录里的 file 指向**选中的那一份**：加工编排的文件浏览、插入帧都按它取 */
+            file: { name: f.name, size: f.size, duration: f.duration || 0 },
+            pageCount: Number(f.pages) || 0, pages: pages.slice()
           };
         });
         var res = S.addSelections(t.id, items);
@@ -402,8 +523,10 @@
   function paintPickCount() {
     var box = document.getElementById('pick-count');
     if (box) {
-      var n = Object.keys(state.pickSelected).filter(function (id) { return state.pickSelected[id]; }).length;
-      box.textContent = '共 ' + pickRows().length + ' 份可加入' + (n ? '，已勾选 ' + n + ' 份' : '');
+      var n = pickKeyIds().length;
+      var files = pickRows().reduce(function (a, m) { return a + S.materialFileList(m).length; }, 0);
+      box.textContent = '共 ' + files + ' 份文件可加入（' + pickRows().length + ' 条素材）' +
+        (n ? '，已勾选 ' + n + ' 份' : '');
     }
     var side = document.getElementById('pick-side');
     if (side) side.innerHTML = scopeHtml();
@@ -561,6 +684,30 @@
       if (box) box.innerHTML = pickTableHtml();
       paintPickCount();
     });
+    U.register('sel:pick-cat', function (ds, el) {
+      state.pickCategory = el.value;
+      var box = document.getElementById('pick-list');
+      if (box) box.innerHTML = pickTableHtml();
+      paintPickCount();
+    });
+    /* 整行点一下＝选择这份文件（先选文件那一步；点在按钮/勾选框/链接上时不重复处理） */
+    U.register('sel:pick-row', function (ds, el, ev) {
+      var t = ev && ev.target;
+      if (t && t.closest && t.closest('button, input, label, a')) return;
+      /* ds.id 是「素材#文件」键；点到组行（素材行）不处理 */
+      if (String(ds.id).indexOf('#') < 0) return;
+      var next = !state.pickSelected[ds.id];
+      applyPick(ds.id, next);
+      if (next && state.scopeMode === 'pages') {
+        var keep = trimToSingle(ds.id);
+        if (keep) {
+          var kp0 = pickedFiles()[0];
+          U.toast('「个别页」一次只能选一份文件，已改为只选「' +
+            (kp0 ? kp0.file.name : keep) + '」', 'ok');
+        }
+      }
+      paintPickCount();
+    });
     U.register('sel:pick-search', function () {
       var el = document.getElementById('pick-kw');
       state.pickKeyword = el ? el.value : '';
@@ -569,16 +716,14 @@
       paintPickCount();
     });
     U.register('sel:pick-select', function (ds, el) {
-      if (el.checked) state.pickSelected[ds.id] = true;
-      else delete state.pickSelected[ds.id];
-      var tr = el.closest ? el.closest('tr') : null;
-      if (tr) tr.classList.toggle('selected', !!el.checked);
-      /* 「指定页」是给某一份文件设页码，所以这时勾选是单选：勾新的替换旧的 */
+      applyPick(ds.id, !!el.checked);
+      /* 「个别页」是给某一份文件设页码，所以这时选择是单选：选新的替换旧的 */
       if (el.checked && state.scopeMode === 'pages') {
         var keep = trimToSingle(ds.id);
         if (keep) {
-          var m = S.getMaterial(keep);
-          U.toast('「指定页」一次只能选一份素材，已改为只选「' + (m ? m.title : keep) + '」', 'ok');
+          var kp1 = pickedFiles()[0];
+          U.toast('「个别页」一次只能选一份文件，已改为只选「' +
+            (kp1 ? kp1.file.name : keep) + '」', 'ok');
         }
       }
       paintPickCount();
@@ -588,12 +733,20 @@
       if (App.materialView) App.materialView.open('library', ds.id);
     });
     U.register('sel:scope-mode', function (ds, el) {
+      /* 没选文件时范围那一步是禁用的；万一被程序绕过（例如脚本直接改 checked），
+         这里也不让它静默生效 —— 先提示"先选文件"，并把模式退回「整个文件」。 */
+      if (!pickKeyIds().length) {
+        state.scopeMode = 'all';
+        U.toast('请先在左侧列表里选择文件，再选择加入范围', 'warn');
+        paintPickCount();
+        return;
+      }
       state.scopeMode = el.value;
       if (state.scopeMode === 'pages') {
         var keep = trimToSingle(null);
         if (keep) {
-          var m = S.getMaterial(keep);
-          U.toast('「指定页」一次只能选一份素材，已保留「' + (m ? m.title : keep) + '」', 'ok');
+          var kp2 = pickedFiles()[0];
+          U.toast('「个别页」一次只能选一份文件，已保留「' + (kp2 ? kp2.file.name : keep) + '」', 'ok');
         }
       }
       paintPickCount();

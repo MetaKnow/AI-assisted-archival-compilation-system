@@ -29,7 +29,10 @@
     keyword: '',
     status: '',
     selected: {},
-    formFiles: []
+    formFiles: [],
+    /* AI 辅助选题上一次起草的三段正文（按 textarea id 记）：再次采用候选主题时
+       **AI 写的可以换掉、人工改过的一律保留** —— 否则"换了候选却没变化"会让人以为功能坏了 */
+    aiDrafts: {}
   };
 
   /* ------------------------------------------------------------ 小工具 */
@@ -400,6 +403,7 @@
   }
 
   function openForm(topic) {
+    state.aiDrafts = {};      /* 每打开一次表单，重新记 AI 草稿 */
     var isEdit = !!(topic && topic.id);
     var t = isEdit ? topic : blank();
     state.formFiles = (t.attachments || []).map(function (a) {
@@ -588,6 +592,22 @@
 
   /* --------------------------------------------------- AI 辅助选题 */
 
+  /**
+   * 「AI 辅助选题」采用后一次填入的栏目 —— **单一出处**：
+   * 填充循环、弹窗文案、候选卡提示都从这份清单取，
+   * 避免再出现"加了栏目却漏了生成 / 漏了提示"的漏项（保障措施就是这么漏过一栏）。
+   */
+  var AI_FILL_FIELDS = [
+    { id: 'f-background', key: 'background', label: '背景与意义' },
+    { id: 'f-content', key: 'content', label: '内容与目标' },
+    { id: 'f-plan', key: 'plan', label: '实施方案' },
+    { id: 'f-guarantee', key: 'guarantee', label: '保障措施' }
+  ];
+
+  function aiFillLabels() {
+    return AI_FILL_FIELDS.map(function (f) { return f.label; });
+  }
+
   function supportTag(level) {
     var cls = level === '强' ? 'tag-ok' : (level === '中' ? 'tag-warn' : '');
     return U.tag('史料支撑度 ' + level, cls);
@@ -598,8 +618,9 @@
       '<div class="alert alert-info" role="note">' +
         '<span class="alert-icon">' + icon('info') + '</span>' +
         '<div><div class="alert-title">原型不调用真实模型</div>' +
-        '本页只呈现「AI 辅助选题」的交互形态：候选主题为预置结果，' +
-        '点击「采用」会填入选题名称与立项依据。' +
+        '本页只呈现「AI 辅助选题」的交互形态：候选主题与四段正文均为预置结果。' +
+        '点击「采用」会按评估表的填写要点，一次填入 <b>选题名称、' + aiFillLabels().join('、') + '</b>' +
+        '（表单里已经手填过的字段不会被覆盖）。' +
         '生产环境由内网模型基于馆藏真实召回生成（召回结果作为上下文交给模型）。</div>' +
       '</div>' +
       '<div style="margin-top:var(--s3)">' +
@@ -608,6 +629,7 @@
             '<div class="ai-main">' +
               '<div class="ai-title">' + esc(c.name) + '</div>' +
               '<div class="ai-basis">' + esc(c.basis) + '</div>' +
+              '<div class="ai-fills">采用后填入：选题名称 · ' + aiFillLabels().join(' · ') + '</div>' +
             '</div>' +
             '<div class="ai-side">' + supportTag(c.support) +
               '<button type="button" class="btn btn-sm btn-primary" data-action="topic:ai-use" ' +
@@ -752,13 +774,27 @@
     U.register('topic:ai-use', function (ds) {
       var c = App.mock.AI_TOPIC_CANDIDATES[parseInt(ds.i, 10)];
       if (!c) return;
+      /* 采用候选主题：把评估表里可以由 AI 起草的几栏一次填好 ——
+         选题名称 + 背景与意义 / 内容与目标 / 实施方案（三段正文按各自框里的填写要点组织）。
+         **已经手填过的字段不覆盖**：人工写下的内容优先，只在提示里说明跳过了哪几栏。 */
       var nameEl = document.getElementById('f-name');
-      var bgEl = document.getElementById('f-background');
       if (nameEl) nameEl.value = c.name;
-      // 一并填入立项依据，省去重敲；其余字段留给人工补充
-      if (bgEl && !bgEl.value.trim()) bgEl.value = '1. 立项依据：' + c.basis;
+      var filled = [], kept = [];
+      AI_FILL_FIELDS.forEach(function (f) {
+        var el = document.getElementById(f.id);
+        var draft = String(c[f.key] || '').trim();
+        if (!el || !draft) return;
+        var cur = el.value.trim();
+        /* 空栏直接填；已有内容时，只有"还是上一次 AI 写的那段"才允许换掉 —— 人工改过的一律保留 */
+        if (cur && cur !== state.aiDrafts[f.id]) { kept.push(f.label); return; }
+        el.value = draft;
+        state.aiDrafts[f.id] = draft;
+        filled.push(f.label);
+      });
       U.closeTop();
-      U.toast('已采用候选主题（原型未调用真实模型）', 'ok');
+      U.toast('已采用候选主题：填入选题名称' + (filled.length ? '、' + filled.join('、') : '') +
+        (kept.length ? '；' + kept.join('、') + '已有内容，未覆盖' : '') +
+        '（原型未调用真实模型）', 'ok');
       if (nameEl) nameEl.focus();
     });
 
@@ -794,6 +830,7 @@
   }
 
   App.topic = {
+    aiFillFields: aiFillLabels,
     readonlyFormHtml: readonlyFormHtml,
     viewMeta: viewMeta,
     exportForm: exportForm,

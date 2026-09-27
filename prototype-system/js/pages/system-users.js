@@ -2,9 +2,12 @@
    页面：系统管理 · 用户管理
 
    需求（评审给出）：
-     1. 新增：设置用户名、姓名、密码            → **生成界面**
-     2. 修改：修改用户名、姓名、密码            → 只给按钮
+     1. 新增：设置用户名、姓名、密码、职位      → **生成界面**
+     2. 修改：修改用户名、姓名、密码、职位      → 只给按钮
      3. 删除：删除用户                          → 只给按钮
+
+    评审要求（本轮）：列表与表单都显示「**职位**」；列表**不再显示**
+    「角色 / 部门 / 涉及数据」三列 —— 角色与部门仍存在于数据里（权限迁移窗口要用），只是不在用户列表上维护。
      4. 更多操作：权限迁移、重置密码、批量导入、批量导出、锁定、解锁
         —— 其中**权限迁移生成界面**，其余只给按钮
 
@@ -43,25 +46,6 @@
     return Object.keys(state.selected).filter(function (id) {
       return state.selected[id] && S.users().some(function (u) { return u.id === id; });
     });
-  }
-
-  /** 列表摘要：该用户"涉及本人"的业务数据量 */
-  function permText(u) {
-    return S.involvementText(u.id);
-  }
-
-  /** 悬停显示具体涉及哪些任务与流程 */
-  function involvementTitle(u) {
-    var inv = S.userInvolvement(u.id);
-    var parts = [];
-    if (inv.tasks.length) {
-      parts.push('编研任务：' + inv.tasks.slice(0, 6).map(function (t) { return t.id; }).join('、') +
-        (inv.tasks.length > 6 ? ' 等 ' + inv.tasks.length + ' 个' : ''));
-    }
-    if (inv.flows.length) {
-      parts.push('审核流程：' + inv.flows.map(function (f) { return f.flowNo; }).join('、'));
-    }
-    return parts.length ? parts.join('；') : '没有涉及本人的编研任务或审核流程';
   }
 
   /* ------------------------------------------------------------ 列表 */
@@ -114,9 +98,7 @@
         '<td class="usr-account">' + esc(u.account || '—') + '</td>' +
         '<td class="usr-name">' + esc(u.name) +
           (u.id === (S.currentUser() || {}).id ? ' ' + U.tag('当前登录', 'tag-accent') : '') + '</td>' +
-        '<td>' + esc(u.roleLabel || u.role) + '</td>' +
-        '<td class="usr-dept">' + esc(u.dept || '—') + '</td>' +
-        '<td class="usr-perm" title="' + esc(involvementTitle(u)) + '">' + esc(permText(u)) + '</td>' +
+        '<td class="usr-title">' + (u.title ? esc(u.title) : '<span class="muted">—</span>') + '</td>' +
         '<td>' + (u.locked ? U.tag('已锁定', 'tag-warn') : U.tag('正常', 'tag-ok')) + '</td>' +
         '<td class="tnum usr-created">' + esc(String(u.createdAt || '').slice(0, 10)) + '</td>' +
       '</tr>';
@@ -129,9 +111,7 @@
         '<th class="col-idx">序号</th>' +
         '<th>用户名</th>' +
         '<th>姓名</th>' +
-        '<th>角色</th>' +
-        '<th>部门</th>' +
-        '<th>涉及数据</th>' +
+        '<th>职位</th>' +
         '<th>状态</th>' +
         '<th>创建时间</th>' +
       '</tr></thead><tbody>' + body + '</tbody></table></div>';
@@ -171,6 +151,13 @@
             '</div>' +
           '</div>' +
           '<div class="rec-row">' +
+            '<label class="rec-label" for="u-title">职位：</label>' +
+            '<div class="rec-field">' +
+              '<input class="input" id="u-title" maxlength="20" autocomplete="off" ' +
+                'placeholder="如：编研项目负责人（留空即显示「—」）">' +
+            '</div>' +
+          '</div>' +
+          '<div class="rec-row">' +
             '<label class="rec-label" for="u-pwd"><span class="req">*</span>密码：</label>' +
             '<div class="rec-field">' +
               '<input class="input" id="u-pwd" type="password" maxlength="32" autocomplete="new-password" ' +
@@ -185,7 +172,8 @@
         var data = {
           account: modal.querySelector('#u-account').value,
           name: modal.querySelector('#u-name').value,
-          password: modal.querySelector('#u-pwd').value
+          password: modal.querySelector('#u-pwd').value,
+          title: modal.querySelector('#u-title').value
         };
         var res = S.addUser(data);
         if (!res.ok) {

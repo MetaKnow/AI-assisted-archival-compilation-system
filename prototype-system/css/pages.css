@@ -291,6 +291,11 @@
   line-height: 1.7;
   margin-top: 3px;
 }
+.ai-cand .ai-fills {
+  margin-top: 5px;
+  font-size: var(--fs-xs);
+  color: var(--accent-d);
+}
 .ai-cand .ai-side { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); flex: 0 0 auto; }
 
 /* ==========================================================================
@@ -993,8 +998,7 @@
 .usr-table td.col-check input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .usr-table td.usr-account { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-2); }
 .usr-table td.usr-name { font-weight: 500; color: var(--navy); white-space: nowrap; }
-.usr-table td.usr-dept { white-space: nowrap; }
-.usr-table td.usr-perm { font-size: var(--fs-xs); color: var(--ink-3); }
+.usr-table td.usr-title { white-space: nowrap; }
 .usr-table td.usr-created { white-space: nowrap; }
 .usr-table tr.selected td { background: var(--accent-l); }
 
@@ -1707,7 +1711,15 @@
 .pick-main { min-width: 0; }
 .pick-side { min-width: 0; }
 .pick-table { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-sm); }
-.pick-table .table { min-width: 640px; }
+/* 固定列宽：弹窗右侧还有「加入范围」栏，用 auto 布局时表格的"最大内容宽度"会超出容器，
+   操作列被挤到栏外（曾经就是这样）。fixed 布局让标题列吃掉剩余宽度并省略号收起。 */
+.pick-table .table { min-width: 0; width: 100%; table-layout: fixed; }
+.pick-table th.col-check, .pick-table td.col-check { width: 34px; }
+.pick-table th.col-idx, .pick-table td.col-idx { width: 46px; }
+.pick-table th.col-cat, .pick-table td.col-cat { width: 92px; }
+.pick-table th.col-tags, .pick-table td.col-tags { width: 244px; overflow: hidden; }
+.pick-table th.col-title, .pick-table td.col-title { max-width: none; }
+.pick-table .title-cell { max-width: none; }
 .pick-table thead th {
   position: sticky;
   top: 0;
@@ -1719,7 +1731,7 @@
 .pick-table .tag-chips { flex-wrap: nowrap; }
 .pick-empty { padding: var(--s5); text-align: center; color: var(--ink-3); font-size: var(--fs-sm); }
 
-/* 加入方式（整份 / 指定页） */
+/* 加入范围（先选文件 → 再选整个文件 / 个别页） */
 .scope-box {
   padding: var(--s3);
   background: var(--surface-2);
@@ -1728,9 +1740,48 @@
 }
 .scope-box .field-label { margin-bottom: var(--s2); }
 .scope-box .check { display: block; margin-bottom: 6px; font-size: var(--fs-sm); }
+.scope-box .check.is-disabled { color: var(--ink-3); cursor: not-allowed; }
+.scope-box .check.is-disabled input { cursor: not-allowed; }
 .scope-pages { margin: 6px 0 2px; }
 .scope-pages .input { width: 100%; }
 .scope-box .field-extra { margin-top: var(--s2); }
+
+/* 两步式：① 选择文件 → ② 选择加入范围 */
+.scope-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--s3) 0 var(--s2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--navy);
+}
+.scope-step:first-child { margin-top: 0; }
+.scope-step-no {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 50%;
+}
+.scope-step-state {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+/* 选择素材弹窗：整行可点选（先选文件那一步） */
+/* ⚠️ 类名不能用 .pick-row：那是「选择用户 / 上传素材」列表的 flex 行，
+   套到 <tr> 上会把表格行变成 flex 容器，单元格全被 blockify（整张表错位） */
+.pick-table tbody tr.pick-row-hit { cursor: pointer; }
+.pick-table tbody tr.pick-row-hit:hover { background: var(--accent-l); }
 
 @media (max-width: 1080px) {
   .pick-layout { grid-template-columns: minmax(0, 1fr); }
@@ -2670,3 +2721,39 @@
 
 /* 归档材料的录入表单：标签列要放得下「所属编研任务」这样的六字标签 */
 .ar-form-table .form-row { grid-template-columns: 124px minmax(0, 1fr); }
+
+/* ==========================================================================
+   选择素材弹窗 · 两级列表（素材条目行 + 文件行）
+   —— 评审修正："一条条目里可能有多份文件"，所以先选文件、再选范围
+   ========================================================================== */
+
+.pick-table tbody tr.pick-group { background: var(--surface-2); }
+.pick-table tbody tr.pick-group:hover { background: var(--surface-2); }
+.pick-table tbody tr.pick-group .col-title { font-weight: 500; color: var(--navy); }
+.pick-table tbody tr.pick-group .col-title .tag { margin-left: 6px; }
+.pick-table tbody tr.pick-file-row { cursor: pointer; }
+.pick-table tbody tr.pick-file-row:hover { background: var(--accent-l); }
+.pick-table tbody tr.pick-file-row.selected { background: var(--accent-l); }
+.pick-table td.pick-file-name { padding-left: var(--s5); }
+.pick-file-no {
+  display: inline-block;
+  width: 16px;
+  margin-right: 4px;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.pick-file-note {
+  display: block;
+  padding-left: 20px;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 查看素材 / 查看档案：多份文件的清单 */
+.mv-sec-note { margin-left: var(--s2); font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
+.mv-file-table th, .mv-file-table td { white-space: nowrap; }
+.mv-file-table td:nth-child(2), .mv-file-table td:nth-child(5) { white-space: normal; }

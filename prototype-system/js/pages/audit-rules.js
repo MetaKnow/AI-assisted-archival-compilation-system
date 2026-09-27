@@ -171,7 +171,8 @@
         '》的敏感内容管理（' + esc((App.mock.AUDIT_SOURCE || {}).path || '') + '，' +
         esc((App.mock.AUDIT_SOURCE || {}).fetchedAt || '') + ' 抓取，共 ' +
         ((App.mock.AUDIT_SOURCE || {}).count || 0) + ' 条）。' +
-        '这些规则是第 4 阶段「审核校定」里<b>政治性审核</b>与<b>合规性审核（不宜公开）</b>的判定依据。</span></div>';
+        '这些规则是第 4 阶段「审核校定」里<b>政治性审核</b>的判定依据 —— ' +
+        '<b>合规性审核不依赖规则</b>（由模型判定知识产权风险与个人隐私及个人信息）。</span></div>';
   }
 
   /* ---------------------------------------------------- 查看 / 新增 / 修改 */
@@ -295,7 +296,8 @@
     var names = ids.map(function (id) { return (S.getAuditRule(id) || {}).title; }).join('、');
     U.confirm({
       title: '删除选中的 ' + ids.length + ' 条审核规则？',
-      content: '将删除：' + esc(names) + '。<br>删除后这两类审核（政治性 / 合规性·不宜公开）不再依据它们判定。',
+      content: '将删除：' + esc(names) + '。<br>删除后<b>政治性审核</b>不再依据它们判定' +
+        '（合规性审核本来就不依赖规则）。',
       okText: '删除'
     }).then(function (ok) {
       if (!ok) return;

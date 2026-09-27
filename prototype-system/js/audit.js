@@ -5,9 +5,10 @@
      1) 政治性审核 —— **依托审核规则**（系统管理 · 归档设置 → 审核规则）：
         从规则的敏感内容里抽出敏感词条，扫编研成果正文，命中即报"规则标题 + 命中内容"。
      2) 专业性审核 —— **不依赖规则**：错别字词典 + 民国纪年换算 + 编研规范表述。
-     3) 合规性审核 —— 个人隐私/个人信息由**模型识别**（身份证号 / 手机号 / 银行卡 / 邮箱等
-        正则识别，不依赖规则）；"不宜公开内容"**依托审核规则**（个人信息 / 数据安全 / 司法执法
-        / 纪检监察 / 公共安全 / 科技 / 经济 / 开放规则 等类型）。
+     3) 合规性审核 —— **不依赖审核规则**（评审要求）：由模型判定两件事 ——
+        ① 是否涉及**知识产权风险**（转载/摘编未注明出处、网络图片、未获授权、商标与专利等）；
+        ② 是否涉及**个人隐私及个人信息**（身份证号 / 手机号 / 银行卡 / 邮箱等可由正则识别，
+           家庭住址、个人简历、薪酬等按关键词提示复核）。
 
    为什么把敏感词条从规则文本里抽：参照系统里的"敏感内容"是整段法规式文本
    （「（一）涉及重大政治事件及敏感历史问题的材料…」），直接拿整段去比对正文永远不会命中；
@@ -23,10 +24,6 @@
   /* 政治性审核用到的规则类型（其余受控类型归到"合规性 · 不宜公开"） */
   var POLITICAL_TYPES = ['通用敏感规则', '政治类', '历史类', '民族宗教类', '涉外类',
     '国土类', '军事类', '国家安全类', '干部人事类', '文化类'];
-  /* 合规性审核 · 不宜公开用到的规则类型 */
-  var UNPUBLIC_TYPES = ['个人信息类', '数据安全类', '司法执法类', '纪检监察类',
-    '公共安全类', '科技类', '经济类', '开放规则', '测试类'];
-
   /* 泛化词：这些词到处出现，作为敏感词条只会制造误报（"历史""教育""重大"…） */
   var GENERIC_WORDS = ['教育', '学校', '教学', '教师', '学生', '材料', '档案', '历史', '重大',
     '活动', '工作', '管理', '建设', '发展', '服务', '记录', '数据', '情况', '内容', '方面',
@@ -122,18 +119,20 @@
 
   function flagOf(rule) { return rule.controlFlag || 'CONTROL'; }
 
-  /** 按类型挑出参与某类审核的规则（只取启用的） */
-  function rulesFor(kind) {
-    var types = kind === 'political' ? POLITICAL_TYPES : UNPUBLIC_TYPES;
+  /**
+   * 只有**政治性审核**用审核规则（评审要求：合规性审核不依赖审核规则）。
+   * 规则一律取启用的那些。
+   */
+  function politicalRules() {
     return App.store.auditRules().filter(function (r) {
-      return r.enable !== false && types.indexOf(r.typeName) >= 0;
+      return r.enable !== false && POLITICAL_TYPES.indexOf(r.typeName) >= 0;
     });
   }
 
   /* ------------------------------------------------------ 1) 政治性审核 */
 
   function runPolitical(taskId) {
-    var rules = rulesFor('political');
+    var rules = politicalRules();
     var items = [];
     chaptersOf(taskId).forEach(function (ch) {
       rules.forEach(function (rule) {
@@ -281,46 +280,86 @@
     return items;
   }
 
-  /** 不宜公开内容：依托审核规则（合规性那一组类型） */
-  function runUnpublic(taskId) {
-    var rules = rulesFor('compliance');
+  /* ---------------- 合规性 · 知识产权风险（模型识别，不依赖规则） ----------------
+     档案编研成果常见的知识产权风险：转载/摘编他人作品未注明出处、使用网络图片未标权利人、
+     未经许可使用他人成果、涉及商标与专利内容。这里按关键词 + 上下文提示复核，
+     命中后只提示"需要核实/补充授权或出处"，不直接改写。 */
+  var IP_CHECKS = [
+    { key: 'reprint', label: '转载 / 摘编他人作品',
+      re: /(转载|摘编|摘录自|引自)([^。；\n]{0,12})/g,
+      detail: '出现「$」：转载或摘编他人作品需注明原作者与出处，并确认在授权范围内使用',
+      suggestion: '补充原作者与出处（或删除该段）' },
+    { key: 'webimage', label: '网络图片 / 来源不明',
+      re: /(图片来源于网络|来源于网络|网络图片|整理自网络)/g,
+      detail: '出现「$」：网络图片权利人不清，公开出版前需替换为馆藏原件或取得许可',
+      suggestion: '替换为馆藏原件影印件' },
+    { key: 'unauthorized', label: '未获授权使用',
+      re: /(未经许可|未获授权|未取得授权|未取得许可|授权不明)/g,
+      detail: '出现「$」：使用他人作品需有授权依据，建议在辅文中说明授权情况或补办授权',
+      suggestion: '补充授权说明或删除该段' },
+    { key: 'mark', label: '商标 / 专利内容',
+      re: /(注册商标|商标标识|专利申请|专利技术|实用新型专利)/g,
+      detail: '出现「$」：涉及商标/专利内容，公开前需核实权利状态与公开范围',
+      suggestion: '核实权利状态后再公开' }
+  ];
+
+  function runIp(taskId) {
     var items = [];
     chaptersOf(taskId).forEach(function (ch) {
-      rules.forEach(function (rule) {
-        var hits = [];
-        ruleTerms(rule).forEach(function (t) {
-          var from = 0;
-          for (;;) {
-            var at = ch.text.indexOf(t.term, from);
-            if (at < 0) break;
-            hits.push({ start: at, end: at + t.term.length, term: t.term, meta: t });
-            from = at + t.term.length;
-            if (hits.length > 40) break;
-          }
-        });
-        if (!hits.length) return;
-        hits.sort(function (a, b) { return a.start - b.start; });
-        var first = hits[0];
-        items.push({
-          id: 'RV-U-' + rule.id + '-' + ch.id,
-          kind: 'compliance', sub: 'unpublic',
-          chapterId: ch.id, chapterTitle: ch.title,
-          ruleId: rule.id, ruleTitle: rule.title, ruleType: rule.typeName,
-          controlFlagTitle: rule.controlFlagTitle || App.store.controlFlagTitle(flagOf(rule)),
-          clauseNo: first.meta.clauseNo, clauseMarker: first.meta.clauseMarker,
-          clauseText: first.meta.clauseText,
-          start: first.start, end: first.end, text: ch.text.slice(first.start, first.end),
-          hitCount: hits.length,
-          hits: hits.map(function (h) { return { start: h.start, end: h.end, term: h.term }; }),
-          status: 'open'
+      IP_CHECKS.forEach(function (c) {
+        ch.text.replace(c.re, function (m, g1, g2, offset) {
+          var hit = m.length > 18 ? m.slice(0, 18) + '…' : m;
+          items.push({
+            id: 'RV-I-' + c.key + '-' + ch.id + '-' + offset,
+            kind: 'compliance', sub: 'ip', ip: c.key,
+            chapterId: ch.id, chapterTitle: ch.title,
+            start: offset, end: offset + m.length, text: m,
+            title: '知识产权风险 · ' + c.label + '（模型识别）',
+            detail: c.detail.replace('$', hit),
+            suggestion: c.suggestion, autoFixable: false, status: 'open'
+          });
+          return m;
         });
       });
     });
     return items;
   }
 
+  /* ---------------- 合规性 · 个人隐私及个人信息（模型识别，不依赖规则） ----------------
+     正则能认的（身份证号 / 手机号 / 银行卡 / 邮箱）逐条给出脱敏建议；
+     认不出但明显属于个人信息的（住址 / 健康 / 婚姻 / 薪酬 / 简历等）按关键词提示复核。 */
+  var PERSONAL_KEYWORDS = [
+    { key: 'address', label: '家庭住址 / 联系方式', re: /(家庭住址|详细住址|家庭地址|联系地址|住宅电话)/g },
+    { key: 'health', label: '健康状况 / 病历', re: /(健康状况|病史|病历|身体情况|残疾情况)/g },
+    { key: 'marriage', label: '婚姻 / 家庭情况', re: /(婚姻状况|婚育情况|家庭成员情况|子女情况)/g },
+    { key: 'salary', label: '薪酬 / 收入', re: /(工资明细|薪酬情况|个人收入|家庭收入)/g },
+    { key: 'resume', label: '个人简历 / 履历', re: /(个人简历|个人履历|工作履历|个人档案)/g }
+  ];
+
+  function runPersonal(taskId) {
+    var items = [];
+    chaptersOf(taskId).forEach(function (ch) {
+      PERSONAL_KEYWORDS.forEach(function (c) {
+        ch.text.replace(c.re, function (m, g1, offset) {
+          items.push({
+            id: 'RV-PI-' + c.key + '-' + ch.id + '-' + offset,
+            kind: 'compliance', sub: 'personal', personal: c.key,
+            chapterId: ch.id, chapterTitle: ch.title,
+            start: offset, end: offset + m.length, text: m,
+            title: '个人信息 · ' + c.label + '（模型识别）',
+            detail: '出现「' + m + '」：属个人信息范畴，公开前需评估必要性并作脱敏或去标识处理',
+            suggestion: '脱敏 / 去标识后再公开', autoFixable: false, status: 'open'
+          });
+          return m;
+        });
+      });
+    });
+    return items;
+  }
+
+  /** 合规性审核：不依赖审核规则 —— 模型判定"知识产权风险"与"个人隐私及个人信息" */
   function runCompliance(taskId) {
-    return runPrivacy(taskId).concat(runUnpublic(taskId));
+    return runIp(taskId).concat(runPrivacy(taskId)).concat(runPersonal(taskId));
   }
 
   App.audit = {
@@ -332,8 +371,8 @@
         basis: '不依赖规则：错别字词典 + 民国纪年换算 + 编研规范表述',
         note: '错别字可由 AI 自动修改，并显示修改信息（原文 → 改后）' },
       { key: 'compliance', title: '合规性审核', icon: 'user-shield',
-        basis: '个人隐私 / 个人信息由模型识别；不宜公开内容依托审核规则（个人信息 / 数据安全 / 司法执法 / 纪检监察 / 公共安全 / 科技 / 经济 / 开放规则类）',
-        note: '隐私信息给脱敏建议，不宜公开内容显示命中规则' }
+        basis: '不依赖审核规则：由模型判定是否涉及知识产权风险（转载/摘编未注明出处、网络图片、未获授权、商标专利等）与个人隐私及个人信息（身份证号 / 手机号 / 银行卡 / 邮箱等可脱敏，家庭住址 / 个人简历 / 薪酬等提示复核）',
+        note: '个人信息给脱敏建议；知识产权风险提示补出处或授权' }
     ],
     run: function (taskId, kind) {
       if (kind === 'political') return runPolitical(taskId);
@@ -347,6 +386,8 @@
     ruleTerms: ruleTerms,
     TYPO_DICT: TYPO_DICT,
     STYLE_DICT: STYLE_DICT,
-    PRIVACY_PATTERNS: PRIVACY_PATTERNS
+    PRIVACY_PATTERNS: PRIVACY_PATTERNS,
+    IP_CHECKS: IP_CHECKS,
+    PERSONAL_KEYWORDS: PERSONAL_KEYWORDS
   };
 })(window);

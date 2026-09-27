@@ -227,8 +227,19 @@ try {
     reviewUi.draftText.indexOf('本汇编') >= 0,
     '左 ' + reviewUi.left + '% 流程（' + reviewUi.steps.length + ' 步）／右 ' + reviewUi.right +
     '% 成果（' + reviewUi.chapters + ' 章）');
+  /* 首个徽标的数字＝"第一处有命中的那一章"的命中项条数：从数据层算出来比对，别写死 */
+  const expectFirstHit = await page.evaluate(`
+    var items = [];
+    ['political', 'professional', 'compliance'].forEach(function (k) {
+      (App.store.auditItems(${JSON.stringify(TASK)}, k) || []).forEach(function (it) { items.push(it); }); });
+    var nodes = App.store.outlineOf(${JSON.stringify(TASK)}).nodes || [];
+    var first = nodes.filter(function (n) {
+      return items.some(function (it) { return it.chapterId === n.id; }); })[0];
+    return first ? items.filter(function (it) { return it.chapterId === first.id; }).length : 0;`)
+    .catch(function () { return -1; });
   check('右侧有编研成果文件的**目录导航**：按大纲列出章节，并标出各章审核命中数',
-    reviewUi.toc === 21 && reviewUi.tocHits >= 1 && reviewUi.tocFirstHit === '10' &&
+    reviewUi.toc === 21 && reviewUi.tocHits >= 1 &&
+    reviewUi.tocFirstHit === String(expectFirstHit) &&
     reviewUi.tocTitles.join('') === '编纂说明编纂目的与意义收录范围与时间断限' &&
     reviewUi.scrollChain.draft === 'auto',
     reviewUi.toc + ' 章；带命中徽标的 ' + reviewUi.tocHits + ' 章（首个徽标 ' + reviewUi.tocFirstHit +
